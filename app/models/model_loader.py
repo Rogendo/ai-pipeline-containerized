@@ -170,6 +170,25 @@ class ModelLoader:
             
             # Check if model files exist
             model_path = os.path.join(self.models_path, model_name)
+            
+            if model_name == "ner":
+                # NER uses spaCy models, not files in models directory
+                from .ner_model import ner_model
+                
+                success = ner_model.load()
+                if success:
+                    model_status.loaded = True
+                    model_status.error = None
+                    model_status.model_info = ner_model.get_model_info()
+                    self.models[model_name] = ner_model
+                    logger.info(f"✅ NER model loaded successfully")
+                else:
+                    model_status.error = ner_model.error or "Failed to load NER model"
+                    logger.error(f"❌ NER model failed to load: {model_status.error}")
+                
+                model_status.load_time = datetime.now()
+                return
+            
             if not os.path.exists(model_path):
                 model_status.error = f"Model path {model_path} not found"
                 model_status.load_time = datetime.now()
