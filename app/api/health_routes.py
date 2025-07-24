@@ -30,6 +30,7 @@ async def detailed_health():
         system_info = resource_manager.get_system_info()
         queue_status = request_queue.get_queue_status()
         model_status = model_loader.get_model_status()
+        system_capabilities = model_loader.get_system_capabilities()
         
         # Determine overall health
         overall_status = "healthy"
@@ -45,13 +46,14 @@ async def detailed_health():
             overall_status = "degraded"
         
         ready_models = model_loader.get_ready_models()
-        failed_models = model_loader.get_failed_models()
+        implementable_models = model_loader.get_implementable_models()
+        blocked_models = model_loader.get_blocked_models()
         
-        if len(ready_models) == 0:
-            issues.append("No models are ready")
+        if len(ready_models) == 0 and len(implementable_models) == 0:
+            issues.append("No models are ready or implementable")
             overall_status = "unhealthy"
-        elif len(failed_models) > 0:
-            issues.append(f"Some models failed to load: {failed_models}")
+        elif len(blocked_models) > 0:
+            issues.append(f"Some models blocked by dependencies: {blocked_models}")
             if overall_status == "healthy":
                 overall_status = "degraded"
         
@@ -67,11 +69,14 @@ async def detailed_health():
             "models": {
                 "total": len(model_status),
                 "ready": len(ready_models),
-                "failed": len(failed_models),
+                "implementable": len(implementable_models),
+                "blocked": len(blocked_models),
                 "ready_models": ready_models,
-                "failed_models": failed_models,
+                "implementable_models": implementable_models,
+                "blocked_models": blocked_models,
                 "details": model_status
-            }
+            },
+            "capabilities": system_capabilities
         }
         
     except Exception as e:
@@ -80,22 +85,34 @@ async def detailed_health():
 
 @router.get("/models")
 async def models_health():
-    """Get detailed model status"""
+    """Get detailed model status with dependency info"""
     model_status = model_loader.get_model_status()
+    system_capabilities = model_loader.get_system_capabilities()
     ready_models = model_loader.get_ready_models()
-    failed_models = model_loader.get_failed_models()
+    implementable_models = model_loader.get_implementable_models()
+    blocked_models = model_loader.get_blocked_models()
+    missing_deps = model_loader.get_missing_dependencies_summary()
     
     return {
         "timestamp": datetime.now().isoformat(),
+        "system_capabilities": system_capabilities,
         "summary": {
             "total": len(model_status),
             "ready": len(ready_models),
-            "failed": len(failed_models)
+            "implementable": len(implementable_models),
+            "blocked": len(blocked_models)
         },
         "ready_models": ready_models,
-        "failed_models": failed_models,
+        "implementable_models": implementable_models,
+        "blocked_models": blocked_models,
+        "missing_dependencies": missing_deps,
         "details": model_status
     }
+
+@router.get("/capabilities")
+async def system_capabilities():
+    """Get ML system capabilities"""
+    return model_loader.get_system_capabilities()
 
 @router.get("/resources")
 async def resources_health():

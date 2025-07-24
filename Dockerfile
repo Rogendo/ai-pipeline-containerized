@@ -19,17 +19,18 @@ RUN mkdir -p /app/models /app/logs /app/temp \
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY app/ ./
+# Copy application code (FIXED PATH)
+COPY app/ ./app/
 
-# Create empty __init__.py files
-RUN touch /app/__init__.py \
-    && touch /app/core/__init__.py \
-    && touch /app/api/__init__.py \
-    && touch /app/models/__init__.py \
-    && touch /app/config/__init__.py
+# Create __init__.py files (FIXED PATHS)
+RUN touch /app/app/__init__.py \
+    && touch /app/app/core/__init__.py \
+    && touch /app/app/api/__init__.py \
+    && touch /app/app/models/__init__.py \
+    && touch /app/app/config/__init__.py
 
 # Set ownership
 RUN chown -R appuser:appuser /app
@@ -45,4 +46,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
