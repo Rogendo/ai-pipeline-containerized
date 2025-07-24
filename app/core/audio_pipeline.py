@@ -127,235 +127,303 @@ class AudioPipelineService:
         #         del self.processing_tasks[request_id]
     
     async def _process_audio_with_queue(
-        self, 
-        request_id: str,
-        audio_bytes: bytes, 
-        filename: str,
-        language: Optional[str] = None,
-        include_translation: bool = True,
-        include_insights: bool = True
-    ) -> Dict[str, Any]:
-        """
-        Process audio with proper queue and resource management integration
-        """
-        
-        start_time = datetime.now()
-        processing_steps = {}
-        
-        try:
-            # Update queue status - starting processing
-            if request_id in request_queue.requests:
-                request_queue.requests[request_id].status = RequestStatus.PROCESSING
+            self, 
+            request_id: str,
+            audio_bytes: bytes, 
+            filename: str,
+            language: Optional[str] = None,
+            include_translation: bool = True,
+            include_insights: bool = True
+        ) -> Dict[str, Any]:
+            """
+            Process audio with proper queue and resource management integration
+            Enhanced with intelligent text chunking for long-form audio
+            """
             
-            # Step 1: Audio Transcription (GPU intensive - use resource manager)
-            logger.info(f"🎙️ [{request_id}] Starting audio transcription...")
-            step_start = datetime.now()
-            
-            # Proper resource management integration
-            if not await resource_manager.acquire_gpu(request_id):
-                raise RuntimeError("Failed to acquire GPU resources")
+            start_time = datetime.now()
+            processing_steps = {}
             
             try:
-                whisper_model = model_loader.models.get("whisper")
-                transcript = whisper_model.transcribe_audio_bytes(audio_bytes, language=language)
-            finally:
-                resource_manager.release_gpu(request_id)
-            
-            processing_steps["transcription"] = {
-                "duration": (datetime.now() - step_start).total_seconds(),
-                "status": "completed",
-                "output_length": len(transcript)
-            }
-            logger.info(f"✅ [{request_id}] Transcription completed: {len(transcript)} characters")
-            
-            # Step 2: Translation (Sequential)
-            translation = None
-            if include_translation:
-                logger.info(f"🌐 [{request_id}] Starting translation...")
+                # Update queue status - starting processing
+                if request_id in request_queue.requests:
+                    request_queue.requests[request_id].status = RequestStatus.PROCESSING
+                
+                # Step 1: Audio Transcription (GPU intensive - use resource manager)
+                logger.info(f"🎙️ [{request_id}] Starting audio transcription...")
                 step_start = datetime.now()
                 
-                try:
-                    translator_model = model_loader.models.get("translator")
-                    translation = translator_model.translate(transcript)
-                    
-                    processing_steps["translation"] = {
-                        "duration": (datetime.now() - step_start).total_seconds(),
-                        "status": "completed",
-                        "output_length": len(translation)
-                    }
-                    logger.info(f"✅ [{request_id}] Translation completed: {len(translation)} characters")
-                    
-                except Exception as e:
-                    logger.error(f"❌ [{request_id}] Translation failed: {e}")
-                    processing_steps["translation"] = {
-                        "duration": (datetime.now() - step_start).total_seconds(),
-                        "status": "failed",
-                        "error": str(e)
-                    }
-                    translation = None
-            
-            # Step 3: Determine text for NLP models
-            nlp_text = translation if translation else transcript
-            nlp_source = "translated_text" if translation else "original_transcript"
-            
-            logger.info(f"🧠 [{request_id}] Starting NLP analysis on {nlp_source}...")
-            
-            # Step 4: Parallel NLP Processing (CPU based)
-            async def run_ner():
-                step_start = datetime.now()
-                try:
-                    ner_model = model_loader.models.get("ner")
-                    entities = ner_model.extract_entities(nlp_text, flat=False)
-                    return {
-                        "result": entities,
-                        "duration": (datetime.now() - step_start).total_seconds(),
-                        "status": "completed"
-                    }
-                except Exception as e:
-                    logger.error(f"❌ [{request_id}] NER failed: {e}")
-                    return {
-                        "result": {},
-                        "duration": (datetime.now() - step_start).total_seconds(),
-                        "status": "failed",
-                        "error": str(e)
-                    }
-            
-            async def run_classifier():
-                step_start = datetime.now()
-                try:
-                    classifier_model = model_loader.models.get("classifier_model")
-                    classification = classifier_model.classify(nlp_text)
-                    return {
-                        "result": classification,
-                        "duration": (datetime.now() - step_start).total_seconds(),
-                        "status": "completed"
-                    }
-                except Exception as e:
-                    logger.error(f"❌ [{request_id}] Classification failed: {e}")
-                    return {
-                        "result": {},
-                        "duration": (datetime.now() - step_start).total_seconds(),
-                        "status": "failed",
-                        "error": str(e)
-                    }
-            
-            async def run_summarization():
-                step_start = datetime.now()
-                try:
-                    summarizer_model = model_loader.models.get("summarizer")
-                    summary = summarizer_model.summarize(nlp_text)
-                    return {
-                        "result": summary,
-                        "duration": (datetime.now() - step_start).total_seconds(),
-                        "status": "completed"
-                    }
-                except Exception as e:
-                    logger.error(f"❌ [{request_id}] Summarization failed: {e}")
-                    return {
-                        "result": "",
-                        "duration": (datetime.now() - step_start).total_seconds(),
-                        "status": "failed",
-                        "error": str(e)
-                    }
-            
-            # Run all NLP tasks in parallel
-            ner_task, classifier_task, summary_task = await asyncio.gather(
-                run_ner(),
-                run_classifier(), 
-                run_summarization(),
-                return_exceptions=True
-            )
-            
-            # Extract results
-            entities = ner_task["result"] if isinstance(ner_task, dict) else {}
-            classification = classifier_task["result"] if isinstance(classifier_task, dict) else {}
-            summary = summary_task["result"] if isinstance(summary_task, dict) else ""
-            
-            # Log processing steps
-            processing_steps.update({
-                "ner": {
-                    "duration": ner_task.get("duration", 0),
-                    "status": ner_task.get("status", "failed"),
-                    "entities_found": len(entities) if entities else 0,
-                    "text_source": nlp_source
-                },
-                "classification": {
-                    "duration": classifier_task.get("duration", 0),
-                    "status": classifier_task.get("status", "failed"),
-                    "confidence": classification.get("confidence", 0) if classification else 0,
-                    "text_source": nlp_source
-                },
-                "summarization": {
-                    "duration": summary_task.get("duration", 0),
-                    "status": summary_task.get("status", "failed"),
-                    "summary_length": len(summary) if summary else 0,
-                    "text_source": nlp_source
-                }
-            })
-            
-            logger.info(f"✅ [{request_id}] NLP processing completed using {nlp_source}")
-            
-            # Step 5: Generate insights (if enabled)
-            insights = {}
-            if include_insights:
-                logger.info(f"🔍 [{request_id}] Generating case insights...")
-                step_start = datetime.now()
+                # Proper resource management integration
+                if not await resource_manager.acquire_gpu(request_id):
+                    raise RuntimeError("Failed to acquire GPU resources")
                 
                 try:
-                    insights = self._generate_insights(
-                        transcript, translation, entities, classification, summary
-                    )
-                    processing_steps["insights"] = {
-                        "duration": (datetime.now() - step_start).total_seconds(),
-                        "status": "completed"
-                    }
-                except Exception as e:
-                    logger.warning(f"⚠️ [{request_id}] Insights generation failed: {e}")
-                    processing_steps["insights"] = {
-                        "duration": (datetime.now() - step_start).total_seconds(),
-                        "status": "failed",
-                        "error": str(e)
-                    }
-            
-            # Calculate total processing time
-            total_processing_time = (datetime.now() - start_time).total_seconds()
-            
-            # Build complete response
-            result = {
-                "request_id": request_id,
-                "audio_info": {
-                    "filename": filename,
-                    "file_size_mb": round(len(audio_bytes) / (1024 * 1024), 2),
-                    "language_specified": language,
-                    "processing_time": total_processing_time
-                },
-                "transcript": transcript,
-                "translation": translation,
-                "nlp_processing_info": {
-                    "text_used_for_nlp": nlp_source,
-                    "nlp_text_length": len(nlp_text)
-                },
-                "entities": entities,
-                "classification": classification,
-                "summary": summary,
-                "insights": insights if include_insights else None,
-                "processing_steps": processing_steps,
-                "pipeline_info": {
-                    "total_time": total_processing_time,
-                    "models_used": ["whisper"] + (["translator"] if include_translation else []) + ["ner", "classifier", "summarizer"],
-                    "text_flow": f"transcript → {nlp_source} → nlp_models",
-                    "timestamp": datetime.now().isoformat()
+                    whisper_model = model_loader.models.get("whisper")
+                    transcript = whisper_model.transcribe_audio_bytes(audio_bytes, language=language)
+                finally:
+                    resource_manager.release_gpu(request_id)
+                
+                processing_steps["transcription"] = {
+                    "duration": (datetime.now() - step_start).total_seconds(),
+                    "status": "completed",
+                    "output_length": len(transcript),
+                    "chunking_applied": False  # Whisper handles its own chunking
                 }
-            }
-            
-            logger.info(f"🎉 [{request_id}] Complete audio pipeline finished in {total_processing_time:.2f}s")
-            return result
-            
-        except Exception as e:
-            logger.error(f"❌ [{request_id}] Audio pipeline failed: {e}")
-            raise RuntimeError(f"Audio pipeline processing failed: {str(e)}")
+                logger.info(f"✅ [{request_id}] Transcription completed: {len(transcript)} characters")
+                
+                # Step 2: Enhanced Translation with Chunking Support
+                translation = None
+                translation_info = {}
+                if include_translation:
+                    logger.info(f"🌐 [{request_id}] Starting translation with chunking support...")
+                    step_start = datetime.now()
+                    
+                    try:
+                        translator_model = model_loader.models.get("translator")
+                        
+                        # Use chunking-aware translation
+                        translation = translator_model.translate_with_fallback(transcript)
+                        
+                        # Get translation strategy info
+                        translation_info = {
+                            "duration": (datetime.now() - step_start).total_seconds(),
+                            "status": "completed" if translation else "failed",
+                            "output_length": len(translation) if translation else 0,
+                            "strategy": "chunked" if len(transcript) > 2000 else "single_pass",
+                            "estimated_chunks": self._estimate_chunks_needed(transcript, "translation")
+                        }
+                        
+                        if translation:
+                            logger.info(f"✅ [{request_id}] Translation completed: {len(translation)} characters ({translation_info['strategy']})")
+                        else:
+                            logger.warning(f"⚠️ [{request_id}] Translation failed, continuing without translation")
+                        
+                    except Exception as e:
+                        logger.error(f"❌ [{request_id}] Translation failed: {e}")
+                        translation_info = {
+                            "duration": (datetime.now() - step_start).total_seconds(),
+                            "status": "failed",
+                            "error": str(e),
+                            "fallback_applied": True
+                        }
+                        translation = None
+                    
+                    processing_steps["translation"] = translation_info
+                
+                # Step 3: Determine text for NLP models with length analysis
+                nlp_text = translation if translation else transcript
+                nlp_source = "translated_text" if translation else "original_transcript"
+                nlp_text_length = len(nlp_text)
+                
+                logger.info(f"🧠 [{request_id}] Starting NLP analysis on {nlp_source} ({nlp_text_length} chars)...")
+                
+                # Step 4: Enhanced Parallel NLP Processing with Chunking
+                async def run_ner():
+                    step_start = datetime.now()
+                    try:
+                        ner_model = model_loader.models.get("ner")
+                        entities = ner_model.extract_entities(nlp_text, flat=False)
+                        
+                        return {
+                            "result": entities,
+                            "duration": (datetime.now() - step_start).total_seconds(),
+                            "status": "completed",
+                            "strategy": "chunked" if nlp_text_length > 1600 else "single_pass",
+                            "entities_found": len(entities) if entities else 0
+                        }
+                    except Exception as e:
+                        logger.error(f"❌ [{request_id}] NER failed: {e}")
+                        return {
+                            "result": {},
+                            "duration": (datetime.now() - step_start).total_seconds(),
+                            "status": "failed",
+                            "error": str(e)
+                        }
+                
+                async def run_classifier():
+                    step_start = datetime.now()
+                    try:
+                        classifier_model = model_loader.models.get("classifier_model")
+                        
+                        # Use chunking-aware classification
+                        classification = classifier_model.classify_with_fallback(nlp_text)
+                        
+                        return {
+                            "result": classification,
+                            "duration": (datetime.now() - step_start).total_seconds(),
+                            "status": "completed",
+                            "strategy": "chunked" if nlp_text_length > 1200 else "single_pass",
+                            "confidence": classification.get("confidence", 0) if classification else 0,
+                            "aggregation_applied": nlp_text_length > 1200
+                        }
+                    except Exception as e:
+                        logger.error(f"❌ [{request_id}] Classification failed: {e}")
+                        return {
+                            "result": {},
+                            "duration": (datetime.now() - step_start).total_seconds(),
+                            "status": "failed",
+                            "error": str(e)
+                        }
+                
+                async def run_summarization():
+                    step_start = datetime.now()
+                    try:
+                        summarizer_model = model_loader.models.get("summarizer")
+                        
+                        # Use chunking-aware summarization with appropriate length
+                        target_length = min(150, max(50, nlp_text_length // 20))
+                        summary = summarizer_model.summarize_with_fallback(
+                            nlp_text, 
+                            max_length=target_length,
+                            min_length=min(40, target_length // 2)
+                        )
+                        
+                        return {
+                            "result": summary,
+                            "duration": (datetime.now() - step_start).total_seconds(),
+                            "status": "completed",
+                            "strategy": "hierarchical" if nlp_text_length > 2000 else "single_pass",
+                            "summary_length": len(summary) if summary else 0,
+                            "compression_ratio": round(len(summary) / nlp_text_length * 100, 1) if summary and nlp_text_length > 0 else 0
+                        }
+                    except Exception as e:
+                        logger.error(f"❌ [{request_id}] Summarization failed: {e}")
+                        return {
+                            "result": "",
+                            "duration": (datetime.now() - step_start).total_seconds(),
+                            "status": "failed",
+                            "error": str(e)
+                        }
+                
+                # Run all NLP tasks in parallel with enhanced error handling
+                ner_task, classifier_task, summary_task = await asyncio.gather(
+                    run_ner(),
+                    run_classifier(), 
+                    run_summarization(),
+                    return_exceptions=True
+                )
+                
+                # Extract results with enhanced error handling
+                entities = ner_task.get("result", {}) if isinstance(ner_task, dict) else {}
+                classification = classifier_task.get("result", {}) if isinstance(classifier_task, dict) else {}
+                summary = summary_task.get("result", "") if isinstance(summary_task, dict) else ""
+                
+                # Enhanced processing steps logging
+                processing_steps.update({
+                    "ner": {
+                        "duration": ner_task.get("duration", 0),
+                        "status": ner_task.get("status", "failed"),
+                        "strategy": ner_task.get("strategy", "unknown"),
+                        "entities_found": ner_task.get("entities_found", 0),
+                        "text_source": nlp_source,
+                        "error": ner_task.get("error") if ner_task.get("status") == "failed" else None
+                    },
+                    "classification": {
+                        "duration": classifier_task.get("duration", 0),
+                        "status": classifier_task.get("status", "failed"),
+                        "strategy": classifier_task.get("strategy", "unknown"),
+                        "confidence": classifier_task.get("confidence", 0),
+                        "aggregation_applied": classifier_task.get("aggregation_applied", False),
+                        "text_source": nlp_source,
+                        "error": classifier_task.get("error") if classifier_task.get("status") == "failed" else None
+                    },
+                    "summarization": {
+                        "duration": summary_task.get("duration", 0),
+                        "status": summary_task.get("status", "failed"),
+                        "strategy": summary_task.get("strategy", "unknown"),
+                        "summary_length": summary_task.get("summary_length", 0),
+                        "compression_ratio": summary_task.get("compression_ratio", 0),
+                        "text_source": nlp_source,
+                        "error": summary_task.get("error") if summary_task.get("status") == "failed" else None
+                    }
+                })
+                
+                # Calculate successful processing ratio
+                successful_steps = sum(1 for step in [ner_task, classifier_task, summary_task] 
+                                    if isinstance(step, dict) and step.get("status") == "completed")
+                processing_success_rate = (successful_steps / 3) * 100
+                
+                logger.info(f"✅ [{request_id}] NLP processing completed using {nlp_source} "
+                        f"(Success rate: {processing_success_rate:.1f}%)")
+                
+                # Step 5: Enhanced Insights Generation
+                insights = {}
+                if include_insights:
+                    logger.info(f"🔍 [{request_id}] Generating enhanced case insights...")
+                    step_start = datetime.now()
+                    
+                    try:
+                        insights = self._generate_enhanced_insights(
+                            transcript, translation, entities, classification, summary, processing_steps
+                        )
+                        processing_steps["insights"] = {
+                            "duration": (datetime.now() - step_start).total_seconds(),
+                            "status": "completed",
+                            "insight_categories": len(insights.keys()) if insights else 0
+                        }
+                    except Exception as e:
+                        logger.warning(f"⚠️ [{request_id}] Insights generation failed: {e}")
+                        processing_steps["insights"] = {
+                            "duration": (datetime.now() - step_start).total_seconds(),
+                            "status": "failed",
+                            "error": str(e)
+                        }
+                
+                # Calculate total processing time
+                total_processing_time = (datetime.now() - start_time).total_seconds()
+                
+                # Build enhanced response with chunking information
+                result = {
+                    "request_id": request_id,
+                    "audio_info": {
+                        "filename": filename,
+                        "file_size_mb": round(len(audio_bytes) / (1024 * 1024), 2),
+                        "language_specified": language,
+                        "processing_time": total_processing_time
+                    },
+                    "transcript": transcript,
+                    "translation": translation,
+                    "nlp_processing_info": {
+                        "text_used_for_nlp": nlp_source,
+                        "nlp_text_length": nlp_text_length,
+                        "chunking_analysis": {
+                            "text_length_category": self._categorize_text_length(nlp_text_length),
+                            "estimated_chunks": {
+                                "translation": self._estimate_chunks_needed(nlp_text, "translation"),
+                                "classification": self._estimate_chunks_needed(nlp_text, "classification"),
+                                "summarization": self._estimate_chunks_needed(nlp_text, "summarization")
+                            },
+                            "processing_strategies_used": {
+                                "translation": translation_info.get("strategy", "not_applicable"),
+                                "ner": processing_steps["ner"]["strategy"],
+                                "classification": processing_steps["classification"]["strategy"],
+                                "summarization": processing_steps["summarization"]["strategy"]
+                            }
+                        },
+                        "processing_success_rate": processing_success_rate
+                    },
+                    "entities": entities,
+                    "classification": classification,
+                    "summary": summary,
+                    "insights": insights if include_insights else None,
+                    "processing_steps": processing_steps,
+                    "pipeline_info": {
+                        "total_time": total_processing_time,
+                        "models_used": ["whisper"] + (["translator"] if include_translation else []) + ["ner", "classifier", "summarizer"],
+                        "text_flow": f"transcript → {nlp_source} → chunked_nlp_models",
+                        "chunking_enabled": True,
+                        "fallback_strategies_available": True,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                }
+                
+                logger.info(f"🎉 [{request_id}] Enhanced audio pipeline finished in {total_processing_time:.2f}s "
+                        f"(Success rate: {processing_success_rate:.1f}%)")
+                return result
+                
+            except Exception as e:
+                logger.error(f"❌ [{request_id}] Audio pipeline failed: {e}")
+                raise RuntimeError(f"Audio pipeline processing failed: {str(e)}") 
         
-    
     def _generate_insights(self, transcript: str, translation: Optional[str], 
                           entities: Dict, classification: Dict, summary: str) -> Dict[str, Any]:
         """Generate case insights from all processed data"""
