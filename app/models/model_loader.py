@@ -171,6 +171,23 @@ class ModelLoader:
             # Check if model files exist
             model_path = os.path.join(self.models_path, model_name)
             
+            if model_name == "whisper":
+                from .whisper_model import whisper_model
+                
+                success = whisper_model.load()
+                if success:
+                    model_status.loaded = True
+                    model_status.error = None
+                    model_status.model_info = whisper_model.get_model_info()
+                    self.models[model_name] = whisper_model
+                    logger.info("✅ Whisper model loaded successfully")
+                else:
+                    model_status.error = whisper_model.error or "Failed to load Whisper model"
+                    logger.error(f"❌ Whisper model failed to load: {model_status.error}")
+                
+                model_status.load_time = datetime.now()
+                return
+            
             if model_name == "ner":
                 # NER uses spaCy models, not files in models directory
                 from .ner_model import ner_model
