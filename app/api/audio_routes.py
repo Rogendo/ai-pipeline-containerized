@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 
 from ..core.audio_pipeline import audio_pipeline
+from ..core.request_queue import request_queue
 from ..models.model_loader import model_loader
 
 logger = logging.getLogger(__name__)
@@ -81,32 +82,21 @@ class QuickAnalysisResponse(BaseModel):
     risk_level: str
     processing_time: float
 
-@router.post("/process", response_model=CompleteAudioResponse)
+@router.post("/process", response_model=Dict[str, Any])
 async def process_audio_complete(
     audio: UploadFile = File(...),
     language: Optional[str] = Form(None),
     include_translation: bool = Form(True),
-    include_insights: bool = Form(True)
+    include_insights: bool = Form(True),
+    background: bool = Form(True)  # New parameter
 ):
     """
-    Complete audio-to-insights pipeline
-    
-    Processes audio through: Whisper → NER → Classification → Translation → Summarization → Insights
+    Complete audio-to-insights pipeline with queue integration
     
     Parameters:
-    - audio: Audio file (wav, mp3, flac, m4a, ogg, webm)
-    - language: Language code (e.g., 'sw', 'en') or auto-detect if None
-    - include_translation: Whether to translate to English
-    - include_insights: Whether to generate case insights
+    - background: If True, returns request_id immediately for async processing
+                 If False, processes synchronously and returns full result
     """
-    
-    # Check pipeline readiness
-    readiness = audio_pipeline.check_pipeline_readiness()
-    if not readiness["pipeline_ready"]:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Audio pipeline not ready. Missing models: {readiness['missing_models']}"
-        )
     
     # Validate audio file
     if not audio.filename:
@@ -131,26 +121,70 @@ async def process_audio_complete(
         )
     
     try:
-        logger.info(f"🎙️ Starting complete audio processing for {audio.filename}")
+        logger.info(f"🎙️ Starting audio processing for {audio.filename} (background={background})")
         
-        # Process through complete pipeline
-        result = await audio_pipeline.process_audio_complete(
+        # Process through pipeline with queue integration
+        result = await audio_pipeline.submit_audio_request(
             audio_bytes=audio_bytes,
             filename=audio.filename,
             language=language,
             include_translation=include_translation,
-            include_insights=include_insights
+            include_insights=include_insights,
+            background=background
         )
         
-        logger.info(f"🎉 Complete audio processing finished for {audio.filename}")
         return result
         
     except Exception as e:
-        logger.error(f"❌ Complete audio processing failed for {audio.filename}: {e}")
+        logger.error(f"❌ Audio processing failed for {audio.filename}: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Audio processing failed: {str(e)}"
         )
+
+@router.post("/process-sync", response_model=CompleteAudioResponse)
+async def process_audio_synchronous(
+    audio: UploadFile = File(...),
+    language: Optional[str] = Form(None),
+    include_translation: bool = Form(True),
+    include_insights: bool = Form(True)
+):
+    """
+    Synchronous audio processing - waits for complete result
+    """
+    return await process_audio_complete(
+        audio=audio,
+        language=language,
+        include_translation=include_translation,
+        include_insights=include_insights,
+        background=False
+    )
+
+@router.get("/request/{request_id}")
+async def get_audio_request_status(request_id: str):
+    """Get status of audio processing request"""
+    status = request_queue.get_request_status(request_id)
+    
+    if status is None:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    return status
+
+@router.get("/requests/active")
+async def get_active_requests():
+    """Get all active audio processing requests"""
+    queue_status = request_queue.get_queue_status()
+    
+    # Get active audio processing requests
+    active_requests = []
+    for request_id, request in request_queue.requests.items():
+        if request.request_type.startswith("audio_processing") and request.status in ["queued", "processing"]:
+            active_requests.append(request_queue.get_request_status(request_id))
+    
+    return {
+        "active_requests": active_requests,
+        "queue_status": queue_status
+    }
 
 @router.post("/analyze", response_model=QuickAnalysisResponse)
 async def quick_audio_analysis(
