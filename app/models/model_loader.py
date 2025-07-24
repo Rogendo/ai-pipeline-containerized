@@ -94,7 +94,7 @@ class ModelLoader:
                 "required": ["spacy", "numpy"],
                 "description": "Named Entity Recognition"
             },
-            "classifier": {
+            "classifier_model": {
                 "required": ["torch", "transformers", "sklearn", "numpy"],
                 "description": "Text classification"
             },
@@ -188,6 +188,22 @@ class ModelLoader:
                 
                 model_status.load_time = datetime.now()
                 return
+            
+            elif model_name == "classifier_model":
+                from .classifier_model import classifier_model
+                success = classifier_model.load()
+                if success:
+                    model_status.loaded = True
+                    model_status.error = None
+                    model_status.model_info = classifier_model.get_model_info()
+                    self.models[model_name] = classifier_model
+                    logger.info(f"✅ {model_name} model loaded successfully")
+                else:
+                    model_status.error = classifier_model.error or "Failed to load classifier model"
+                    logger.error(f"❌ {model_name} model failed to load: {model_status.error}")
+                model_status.load_time = datetime.now()
+                return
+            
             
             if model_name == "translator":
                 from .translator_model import translator_model
