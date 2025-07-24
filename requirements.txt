@@ -65,9 +65,11 @@ PyYAML==6.0.2
 regex==2024.11.6
 requests==2.32.4
 rich==14.0.0
+sacremoses==0.1.1
 safetensors==0.5.3
 scikit-learn==1.7.1
 scipy==1.16.0
+sentencepiece==0.2.0
 setuptools==80.9.0
 shellingham==1.5.4
 smart_open==7.3.0.post1

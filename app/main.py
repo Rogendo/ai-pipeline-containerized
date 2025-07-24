@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from .config.settings import settings
-from .api import health_routes, queue_routes, ner_routes
+from .api import health_routes, queue_routes, ner_routes, translator_routes
 from .models.model_loader import model_loader
 from .core.resource_manager import resource_manager
 
@@ -59,6 +59,7 @@ app.add_middleware(
 app.include_router(health_routes.router)
 app.include_router(queue_routes.router)
 app.include_router(ner_routes.router)
+app.include_router(translator_routes.router)
 
 @app.get("/")
 async def root():

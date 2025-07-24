@@ -189,6 +189,23 @@ class ModelLoader:
                 model_status.load_time = datetime.now()
                 return
             
+            if model_name == "translator":
+                from .translator_model import translator_model
+
+                success = translator_model.load()
+                if success:
+                    model_status.loaded = True
+                    model_status.error = None
+                    model_status.model_info = translator_model.get_model_info()
+                    self.models[model_name] = translator_model
+                    logger.info("✅ Translation model loaded successfully")
+                else:
+                    model_status.error = translator_model.error or "Failed to load translation model"
+                    logger.error(f"❌ Translation model failed to load: {model_status.error}")
+
+                model_status.load_time = datetime.now()
+                return
+            
             if not os.path.exists(model_path):
                 model_status.error = f"Model path {model_path} not found"
                 model_status.load_time = datetime.now()
