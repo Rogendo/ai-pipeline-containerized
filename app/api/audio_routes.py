@@ -1,3 +1,4 @@
+# app/api/audio_routes.py (Updated for Celery)
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
@@ -5,104 +6,36 @@ import logging
 from datetime import datetime
 import os
 
-from ..core.audio_pipeline import audio_pipeline
-from ..core.request_queue import request_queue
-from ..models.model_loader import model_loader
+from ..tasks.audio_tasks import process_audio_task, process_audio_quick_task
+from ..celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/audio", tags=["audio"])
 
-# Response Models
-class AudioInfo(BaseModel):
-    filename: str
-    file_size_mb: float
-    language_specified: Optional[str]
-    processing_time: float
-
-class ProcessingStep(BaseModel):
-    duration: float
+# Response Models (keep your existing ones)
+class TaskResponse(BaseModel):
+    task_id: str
     status: str
-    entities_found: Optional[int] = None
-    confidence: Optional[float] = None
-    output_length: Optional[int] = None
-    summary_length: Optional[int] = None
-    enabled: Optional[bool] = None
-    error: Optional[str] = None
+    message: str
+    estimated_time: str
+    status_endpoint: str
 
-class CaseOverview(BaseModel):
-    primary_language: str
-    key_entities: Dict[str, int]
-    case_complexity: str
-
-class RiskAssessment(BaseModel):
-    risk_indicators_found: int
-    risk_level: str
-    priority: str
-    confidence: float
-
-class KeyInformation(BaseModel):
-    main_category: str
-    sub_category: str
-    intervention_needed: str
-    summary: str
-
-class EntitiesDetail(BaseModel):
-    persons: List[str]
-    locations: List[str]
-    organizations: List[str]
-    key_dates: List[str]
-
-class Insights(BaseModel):
-    case_overview: CaseOverview
-    risk_assessment: RiskAssessment
-    key_information: KeyInformation
-    entities_detail: EntitiesDetail
-
-class PipelineInfo(BaseModel):
-    total_time: float
-    models_used: List[str]
-    timestamp: str
-
-class CompleteAudioResponse(BaseModel):
-    audio_info: AudioInfo
-    transcript: str
-    translation: Optional[str]
-    entities: Dict[str, List[str]]
-    classification: Dict[str, Any]
-    summary: str
-    insights: Optional[Insights]
-    processing_steps: Dict[str, ProcessingStep]
-    pipeline_info: PipelineInfo
-
-class QuickAnalysisResponse(BaseModel):
-    transcript: str
-    summary: str
-    main_category: str
-    priority: str
-    risk_level: str
-    processing_time: float
-
-@router.post("/process", response_model=Dict[str, Any])
+@router.post("/process", response_model=TaskResponse)
 async def process_audio_complete(
     audio: UploadFile = File(...),
     language: Optional[str] = Form(None),
     include_translation: bool = Form(True),
     include_insights: bool = Form(True),
-    background: bool = Form(True)  # New parameter
+    background: bool = Form(True)
 ):
     """
-    Complete audio-to-insights pipeline with queue integration
-    
-    Parameters:
-    - background: If True, returns request_id immediately for async processing
-                 If False, processes synchronously and returns full result
+    Complete audio-to-insights pipeline with Celery
     """
     
     # Validate audio file
     if not audio.filename:
         raise HTTPException(status_code=400, detail="No audio file provided")
     
-    # Check file format
     allowed_formats = [".wav", ".mp3", ".flac", ".m4a", ".ogg", ".webm"]
     file_extension = os.path.splitext(audio.filename)[1].lower()
     if file_extension not in allowed_formats:
@@ -111,7 +44,6 @@ async def process_audio_complete(
             detail=f"Unsupported audio format: {file_extension}. Supported: {allowed_formats}"
         )
     
-    # Check file size (100MB limit)
     max_size = 100 * 1024 * 1024  # 100MB
     audio_bytes = await audio.read()
     if len(audio_bytes) > max_size:
@@ -121,20 +53,36 @@ async def process_audio_complete(
         )
     
     try:
-        logger.info(f"🎙️ Starting audio processing for {audio.filename} (background={background})")
-        
-        # Process through pipeline with queue integration
-        result = await audio_pipeline.submit_audio_request(
-            audio_bytes=audio_bytes,
-            filename=audio.filename,
-            language=language,
-            include_translation=include_translation,
-            include_insights=include_insights,
-            background=background
-        )
-        
-        return result
-        
+        if background:
+            # Submit to Celery
+            task = process_audio_task.delay(
+                audio_bytes=audio_bytes,
+                filename=audio.filename,
+                language=language,
+                include_translation=include_translation,
+                include_insights=include_insights
+            )
+            
+            logger.info(f"🎙️ Submitted audio processing task {task.id} for {audio.filename}")
+            
+            return TaskResponse(
+                task_id=task.id,
+                status="queued",
+                message="Audio processing started. Check status at /audio/task/{task_id}",
+                estimated_time="15-45 seconds",
+                status_endpoint=f"/audio/task/{task.id}"
+            )
+        else:
+            # Synchronous processing
+            result = process_audio_task(
+                audio_bytes=audio_bytes,
+                filename=audio.filename,
+                language=language,
+                include_translation=include_translation,
+                include_insights=include_insights
+            )
+            return result
+            
     except Exception as e:
         logger.error(f"❌ Audio processing failed for {audio.filename}: {e}")
         raise HTTPException(
@@ -142,75 +90,26 @@ async def process_audio_complete(
             detail=f"Audio processing failed: {str(e)}"
         )
 
-@router.post("/process-sync", response_model=CompleteAudioResponse)
-async def process_audio_synchronous(
-    audio: UploadFile = File(...),
-    language: Optional[str] = Form(None),
-    include_translation: bool = Form(True),
-    include_insights: bool = Form(True)
-):
-    """
-    Synchronous audio processing - waits for complete result
-    """
-    return await process_audio_complete(
-        audio=audio,
-        language=language,
-        include_translation=include_translation,
-        include_insights=include_insights,
-        background=False
-    )
-
-@router.get("/request/{request_id}")
-async def get_audio_request_status(request_id: str):
-    """Get status of audio processing request"""
-    status = request_queue.get_request_status(request_id)
-    
-    if status is None:
-        raise HTTPException(status_code=404, detail="Request not found")
-    
-    return status
-
-@router.get("/requests/active")
-async def get_active_requests():
-    """Get all active audio processing requests"""
-    queue_status = request_queue.get_queue_status()
-    
-    # Get active audio processing requests
-    active_requests = []
-    for request_id, request in request_queue.requests.items():
-        if request.request_type.startswith("audio_processing") and request.status in ["queued", "processing"]:
-            active_requests.append(request_queue.get_request_status(request_id))
-    
-    return {
-        "active_requests": active_requests,
-        "queue_status": queue_status
-    }
-
-@router.post("/analyze", response_model=QuickAnalysisResponse)
+@router.post("/analyze", response_model=TaskResponse)
 async def quick_audio_analysis(
     audio: UploadFile = File(...),
-    language: Optional[str] = Form(None)
+    language: Optional[str] = Form(None),
+    background: bool = Form(True)
 ):
     """
-    Quick audio analysis - essentials only
-    
-    Returns: transcript, summary, category, priority, risk level
+    Quick audio analysis with Celery
     """
     
-    # Validate file
     if not audio.filename:
         raise HTTPException(status_code=400, detail="No audio file provided")
     
     allowed_formats = [".wav", ".mp3", ".flac", ".m4a", ".ogg", ".webm"]
     file_extension = os.path.splitext(audio.filename)[1].lower()
     if file_extension not in allowed_formats:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported format: {file_extension}"
-        )
+        raise HTTPException(status_code=400, detail=f"Unsupported format: {file_extension}")
     
     audio_bytes = await audio.read()
-    max_size = 50 * 1024 * 1024  # 50MB limit for quick analysis
+    max_size = 50 * 1024 * 1024  # 50MB
     if len(audio_bytes) > max_size:
         raise HTTPException(
             status_code=400,
@@ -218,95 +117,171 @@ async def quick_audio_analysis(
         )
     
     try:
-        start_time = datetime.now()
-        
-        # Process with minimal pipeline
-        result = await audio_pipeline.process_audio_complete(
-            audio_bytes=audio_bytes,
-            filename=audio.filename,
-            language=language,
-            include_translation=False,
-            include_insights=False
-        )
-        
-        processing_time = (datetime.now() - start_time).total_seconds()
-        
-        # Extract essentials
-        classification = result.get("classification", {})
-        insights = result.get("insights", {})
-        risk_assessment = insights.get("risk_assessment", {}) if insights else {}
-        
-        return QuickAnalysisResponse(
-            transcript=result["transcript"],
-            summary=result["summary"],
-            main_category=classification.get("main_category", "unknown"),
-            priority=classification.get("priority", "medium"),
-            risk_level=risk_assessment.get("risk_level", "unknown"),
-            processing_time=processing_time
-        )
-        
+        if background:
+            task = process_audio_quick_task.delay(
+                audio_bytes=audio_bytes,
+                filename=audio.filename,
+                language=language
+            )
+            
+            return TaskResponse(
+                task_id=task.id,
+                status="queued",
+                message="Quick analysis started",
+                estimated_time="10-20 seconds",
+                status_endpoint=f"/audio/task/{task.id}"
+            )
+        else:
+            result = process_audio_quick_task(
+                audio_bytes=audio_bytes,
+                filename=audio.filename,
+                language=language
+            )
+            return result
+            
     except Exception as e:
         logger.error(f"❌ Quick analysis failed for {audio.filename}: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Quick analysis failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Quick analysis failed: {str(e)}")
 
-@router.get("/pipeline/status")
-async def get_pipeline_status():
-    """Get audio pipeline readiness status"""
-    return audio_pipeline.check_pipeline_readiness()
-
-@router.get("/pipeline/info")
-async def get_pipeline_info():
-    """Get detailed pipeline information"""
-    readiness = audio_pipeline.check_pipeline_readiness()
-    
-    return {
-        "pipeline_ready": readiness["pipeline_ready"],
-        "models_status": readiness["models"],
-        "missing_models": readiness["missing_models"],
-        "supported_formats": [".wav", ".mp3", ".flac", ".m4a", ".ogg", ".webm"],
-        "max_file_size_mb": 100,
-        "endpoints": {
-            "complete_analysis": "/audio/process",
-            "quick_analysis": "/audio/analyze",
-            "pipeline_status": "/audio/pipeline/status"
-        },
-        "pipeline_flow": [
-            "Audio Upload",
-            "Whisper Transcription", 
-            "Parallel NLP Analysis (NER + Classification + Translation + Summarization)",
-            "Insights Generation",
-            "Complete Response"
-        ]
-    }
-
-@router.post("/demo")
-async def audio_demo():
-    """Demo endpoint with usage examples"""
-    pipeline_status = audio_pipeline.check_pipeline_readiness()
-    
-    return {
-        "demo_info": {
-            "complete_analysis": {
-                "endpoint": "/audio/process",
-                "description": "Full audio-to-insights pipeline",
-                "example": "curl -X POST -F 'audio=@case.wav' -F 'language=sw' -F 'include_translation=true' http://localhost:8000/audio/process"
-            },
-            "quick_analysis": {
-                "endpoint": "/audio/analyze", 
-                "description": "Essential insights only (faster)",
-                "example": "curl -X POST -F 'audio=@case.wav' -F 'language=sw' http://localhost:8000/audio/analyze"
+@router.get("/task/{task_id}")
+async def get_task_status(task_id: str):
+    """Get Celery task status with detailed progress"""
+    try:
+        task = celery_app.AsyncResult(task_id)
+        
+        if task.state == "PENDING":
+            response = {
+                "task_id": task_id,
+                "status": "queued",
+                "progress": 0,
+                "message": "Task is waiting to be processed"
             }
-        },
-        "pipeline_status": pipeline_status,
-        "expected_output": {
-            "transcript": "Audio transcription in original language",
-            "translation": "English translation (if enabled)",
-            "entities": "People, places, organizations mentioned",
-            "classification": "Case category, priority, confidence",
-            "summary": "Concise case summary",
-            "insights": "Risk assessment and key information"
+        elif task.state == "PROCESSING":
+            response = {
+                "task_id": task_id,
+                "status": "processing",
+                "progress": task.info.get("progress", 0),
+                "current_step": task.info.get("step", "unknown"),
+                "filename": task.info.get("filename", "unknown")
+            }
+        elif task.state == "SUCCESS":
+            response = {
+                "task_id": task_id,
+                "status": "completed",
+                "progress": 100,
+                "result": task.result,
+                "processing_time": task.result.get("processing_time", 0) if task.result else 0
+            }
+        elif task.state == "FAILURE":
+            response = {
+                "task_id": task_id,
+                "status": "failed",
+                "error": str(task.info),
+                "filename": task.info.get("filename", "unknown") if isinstance(task.info, dict) else "unknown"
+            }
+        else:
+            response = {
+                "task_id": task_id,
+                "status": task.state.lower(),
+                "info": task.info
+            }
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error getting task status for {task_id}: {e}")
+        raise HTTPException(status_code=500, detail="Error retrieving task status")
+
+@router.get("/tasks/active")
+async def get_active_tasks():
+    """Get all active audio processing tasks"""
+    try:
+        # Get active tasks from Celery
+        inspect = celery_app.control.inspect()
+        active_tasks = inspect.active()
+        
+        if not active_tasks:
+            return {"active_tasks": [], "total_active": 0}
+        
+        # Flatten active tasks from all workers
+        all_active = []
+        for worker, tasks in active_tasks.items():
+            for task in tasks:
+                if task['name'] in ['process_audio_task', 'process_audio_quick_task']:
+                    all_active.append({
+                        "task_id": task['id'],
+                        "task_name": task['name'],
+                        "worker": worker,
+                        "args": task.get('args', [])
+                    })
+        
+        return {
+            "active_tasks": all_active,
+            "total_active": len(all_active)
         }
-    }
+        
+    except Exception as e:
+        logger.error(f"Error getting active tasks: {e}")
+        return {"active_tasks": [], "total_active": 0, "error": str(e)}
+
+@router.delete("/task/{task_id}")
+async def cancel_task(task_id: str):
+    """Cancel a Celery task"""
+    try:
+        celery_app.control.revoke(task_id, terminate=True)
+        return {"message": f"Task {task_id} cancelled successfully"}
+    except Exception as e:
+        logger.error(f"Error cancelling task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail="Error cancelling task")
+
+@router.get("/queue/status")
+async def get_queue_status():
+    """Get overall queue status from Celery"""
+    try:
+        inspect = celery_app.control.inspect()
+        
+        # Get stats from all workers
+        stats = inspect.stats()
+        active = inspect.active()
+        scheduled = inspect.scheduled()
+        reserved = inspect.reserved()
+        
+        if not stats:
+            return {
+                "status": "no_workers",
+                "message": "No Celery workers are running",
+                "workers": 0
+            }
+        
+        total_active = sum(len(tasks) for tasks in active.values()) if active else 0
+        total_scheduled = sum(len(tasks) for tasks in scheduled.values()) if scheduled else 0
+        total_reserved = sum(len(tasks) for tasks in reserved.values()) if reserved else 0
+        
+        worker_info = []
+        for worker_name, worker_stats in stats.items():
+            worker_info.append({
+                "name": worker_name,
+                "status": "online",
+                "total_tasks": worker_stats.get("total", {}),
+                "current_load": len(active.get(worker_name, [])) if active else 0
+            })
+        
+        return {
+            "status": "healthy",
+            "workers": len(stats),
+            "worker_info": worker_info,
+            "queue_stats": {
+                "active_tasks": total_active,
+                "scheduled_tasks": total_scheduled,
+                "reserved_tasks": total_reserved,
+                "total_pending": total_active + total_scheduled + total_reserved
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting queue status: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "workers": 0
+        }

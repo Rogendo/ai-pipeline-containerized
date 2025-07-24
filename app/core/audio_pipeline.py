@@ -70,10 +70,10 @@ class AudioPipelineService:
             }
             
             # Start background processing
-            task = asyncio.create_task(
+            asyncio.create_task(
                 self._process_audio_background(request_id, request_data)
             )
-            self.processing_tasks[request_id] = task
+            # self.processing_tasks[request_id] = task
             
             return {
                 "request_id": request_id,
@@ -98,29 +98,33 @@ class AudioPipelineService:
                 request_queue.complete_request(request_id, error=str(e))
                 raise
     
+    # In _process_audio_background method
     async def _process_audio_background(self, request_id: str, request_data: Dict):
-        """Background audio processing with status updates"""
+        logger.info(f"🔄 [{request_id}] Background processing started")
+        
         try:
-            result = await self._process_audio_with_queue(
-                request_id,
-                request_data["audio_bytes"],
-                request_data["filename"],
-                request_data["language"],
-                request_data["include_translation"],
-                request_data["include_insights"]
-            )
+            # Update status to processing
+            request_queue.update_request_status(request_id, "processing")
+            
+            result = await self._process_audio_with_queue(...)
             
             # Mark as completed
+            logger.info(f"✅ [{request_id}] Completing request with result")
             request_queue.complete_request(request_id, result=result)
+            logger.info(f"✅ [{request_id}] Request marked as completed")
             
         except Exception as e:
-            logger.error(f"Background processing failed for {request_id}: {e}")
+            logger.error(f"❌ [{request_id}] Background processing failed: {e}")
             request_queue.complete_request(request_id, error=str(e))
         
-        finally:
-            # Cleanup
-            if request_id in self.processing_tasks:
-                del self.processing_tasks[request_id]
+        # Verify final status
+        final_status = request_queue.get_request_status(request_id)
+        logger.info(f"🔍 [{request_id}] Final status: {final_status}")
+        
+        # finally:
+        #     # Cleanup
+        #     if request_id in self.processing_tasks:
+        #         del self.processing_tasks[request_id]
     
     async def _process_audio_with_queue(
         self, 

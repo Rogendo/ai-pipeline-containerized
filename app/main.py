@@ -9,6 +9,7 @@ from .config.settings import settings
 from .api import health_routes, queue_routes, ner_routes, translator_routes, summarizer_routes, classifier_route, whisper_routes, audio_routes
 from .models.model_loader import model_loader
 from .core.resource_manager import resource_manager
+from .celery_app import celery_app
 
 # Configure logging
 logging.basicConfig(
@@ -92,6 +93,21 @@ async def app_info():
     gpu_info = resource_manager.get_gpu_info()
     system_info = resource_manager.get_system_info()
     
+    try:
+        inspect = celery_app.control.inspect()
+        stats = inspect.stats()
+        celery_status = {
+            "workers_online": len(stats) if stats else 0,
+            "broker_url": celery_app.conf.broker_url,
+            "status": "healthy" if stats else "no_workers"
+        }
+    except Exception as e:
+        celery_status = {
+            "workers_online": 0,
+            "status": "error",
+            "error": str(e)
+        }
+        
     return {
         "app": {
             "name": settings.app_name,
@@ -99,12 +115,7 @@ async def app_info():
             "site_id": settings.site_id,
             "debug": settings.debug
         },
-        "configuration": {
-            "max_concurrent_gpu_requests": settings.max_concurrent_gpu_requests,
-            "max_queue_size": settings.max_queue_size,
-            "request_timeout": settings.request_timeout,
-            "model_loading_enabled": settings.enable_model_loading
-        },
+        "celery": celery_status,
         "system": system_info,
         "gpu": gpu_info
     }
