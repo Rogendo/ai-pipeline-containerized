@@ -206,6 +206,23 @@ class ModelLoader:
                 model_status.load_time = datetime.now()
                 return
             
+            if model_name == "summarizer":
+                from .summarizer_model import summarization_model
+
+                success = summarization_model.load()
+                if success:
+                    model_status.loaded = True
+                    model_status.error = None
+                    model_status.model_info = summarization_model.get_model_info()
+                    self.models[model_name] = summarization_model
+                    logger.info("✅ Summarization model loaded successfully")
+                else:
+                    model_status.error = summarization_model.error or "Failed to load summarization model"
+                    logger.error(f"❌ Summarization model failed to load: {model_status.error}")
+
+                model_status.load_time = datetime.now()
+                return
+
             if not os.path.exists(model_path):
                 model_status.error = f"Model path {model_path} not found"
                 model_status.load_time = datetime.now()
