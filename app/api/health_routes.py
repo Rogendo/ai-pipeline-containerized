@@ -3,10 +3,10 @@ from typing import Dict, Any
 import logging
 from datetime import datetime
 
-from core.resource_manager import resource_manager
-from core.request_queue import request_queue
-from models.model_loader import model_loader
-from config.settings import settings
+from ..core.resource_manager import resource_manager
+from ..core.request_queue import request_queue
+from ..models.model_loader import model_loader
+from ..config.settings import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/health", tags=["health"])
