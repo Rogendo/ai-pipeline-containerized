@@ -2,6 +2,8 @@ from pydantic_settings import BaseSettings
 from typing import Optional
 import os
 
+import redis
+
 class Settings(BaseSettings):
     # Application
     app_name: str = "AI Pipeline"
@@ -34,7 +36,13 @@ class Settings(BaseSettings):
     logs_path: str = "/app/logs"
     temp_path: str = "/app/temp"
     
+    redis_url: str = "redis://localhost:6379/0"
+    redis_task_db: int = 1 
+    
     class Config:
         env_file = ".env"
 
 settings = Settings()
+
+redis_client = redis.from_url(settings.redis_url)
+redis_task_client = redis.from_url(f"redis://localhost:6379/{settings.redis_task_db}")

@@ -1,4 +1,6 @@
 # app/tasks/audio_tasks.py (Updated)
+import json
+import socket
 from celery import current_task
 from celery.signals import worker_init
 from ..celery_app import celery_app
@@ -6,6 +8,8 @@ import logging
 import asyncio
 from typing import Dict, Any, Optional
 from datetime import datetime
+from ..config.settings import redis_task_client
+
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +64,20 @@ def process_audio_task(
     """
     Celery task for complete audio processing with worker models
     """
+    # Store in Redis for reliable tracking
+    task_info = {
+        "task_id": self.request.id,
+        "filename": filename,
+        "started": datetime.now().isoformat(),
+        "worker": socket.gethostname(),
+        "status": "processing"
+    }
+    
+    redis_task_client.hset(
+        "active_audio_tasks", 
+        self.request.id, 
+        json.dumps(task_info)
+    )
     try:
         # Update task state
         self.update_state(
@@ -91,6 +109,9 @@ def process_audio_task(
             self, models, audio_bytes, filename, language, 
             include_translation, include_insights
         )
+        
+        # Remove from Redis on completion
+        redis_task_client.hdel("active_audio_tasks", self.request.id)
         
         return {
             "status": "completed",

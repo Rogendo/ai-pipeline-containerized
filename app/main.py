@@ -10,6 +10,8 @@ from .api import health_routes, queue_routes, ner_routes, translator_routes, sum
 from .models.model_loader import model_loader
 from .core.resource_manager import resource_manager
 from .celery_app import celery_app
+from .core.celery_monitor import celery_monitor
+
 
 # Configure logging
 logging.basicConfig(
@@ -22,8 +24,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
-    logger.info(f"Site ID: {settings.site_id}")
-    logger.info(f"Debug mode: {settings.debug}")
+    
+    # Start Celery event monitoring
+    celery_monitor.start_monitoring()
     
     # Initialize models if enabled
     if settings.enable_model_loading:
@@ -124,7 +127,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=8000,
+        port=8123,
         reload=settings.debug,
         log_level=settings.log_level.lower()
     )

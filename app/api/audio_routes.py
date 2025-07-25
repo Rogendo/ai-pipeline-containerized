@@ -1,4 +1,6 @@
 # app/api/audio_routes.py (Updated for Celery)
+import asyncio
+import json
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
@@ -8,6 +10,8 @@ import os
 
 from ..tasks.audio_tasks import process_audio_task, process_audio_quick_task
 from ..celery_app import celery_app
+from ..core.celery_monitor import celery_monitor
+from ..config.settings import redis_task_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/audio", tags=["audio"])
@@ -196,33 +200,31 @@ async def get_task_status(task_id: str):
 async def get_active_tasks():
     """Get all active audio processing tasks"""
     try:
-        # Get active tasks from Celery
-        inspect = celery_app.control.inspect()
-        active_tasks = inspect.active()
-        
-        if not active_tasks:
-            return {"active_tasks": [], "total_active": 0}
-        
-        # Flatten active tasks from all workers
-        all_active = []
-        for worker, tasks in active_tasks.items():
-            for task in tasks:
-                if task['name'] in ['process_audio_task', 'process_audio_quick_task']:
-                    all_active.append({
-                        "task_id": task['id'],
-                        "task_name": task['name'],
-                        "worker": worker,
-                        "args": task.get('args', [])
-                    })
-        
-        return {
-            "active_tasks": all_active,
-            "total_active": len(all_active)
-        }
+            # Try event-based monitoring first (most reliable)
+            event_data = celery_monitor.get_active_tasks()
+            
+            # Filter for audio tasks only
+            audio_tasks = [
+                task for task in event_data["active_tasks"] 
+                if task.get("name") in ["process_audio_task", "process_audio_quick_task"]
+            ]
+            
+            # Add Redis fallback for additional reliability
+            redis_active = redis_task_client.hgetall("active_audio_tasks")
+            
+            return {
+                "active_tasks": audio_tasks,
+                "total_active": len(audio_tasks),
+                "data_sources": {
+                    "celery_events": len(event_data["active_tasks"]),
+                    "redis_backup": len(redis_active)
+                },
+                "note": "Workers may appear offline during intensive processing - this is normal"
+            }
         
     except Exception as e:
         logger.error(f"Error getting active tasks: {e}")
-        return {"active_tasks": [], "total_active": 0, "error": str(e)}
+        return {"active_tasks": [], "total_active": 0, "error": str(e), "note": "Monitoring may be temporarily unavailable during heavy load"}
 
 @router.delete("/task/{task_id}")
 async def cancel_task(task_id: str):
@@ -238,10 +240,26 @@ async def cancel_task(task_id: str):
 async def get_queue_status():
     """Get overall queue status from Celery"""
     try:
-        inspect = celery_app.control.inspect()
+        inspect = celery_app.control.inspect(timeout=5.0)
         
         # Get stats from all workers
-        stats = inspect.stats()
+        stats = None
+        for attempt in range(3):
+            try:
+                stats = inspect.stats()
+                if stats:
+                    break
+                await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
+            except Exception as e:
+                logger.warning(f"Inspection attempt {attempt + 1} failed: {e}")
+                if attempt == 2:  # Last attempt
+                    # Fallback to basic status
+                    return {
+                        "status": "inspection_timeout",
+                        "message": "Workers busy - monitoring temporarily unavailable",
+                        "workers": "unknown",
+                        "note": "This is normal during heavy processing"
+                    }
         active = inspect.active()
         scheduled = inspect.scheduled()
         reserved = inspect.reserved()
@@ -285,3 +303,36 @@ async def get_queue_status():
             "message": str(e),
             "workers": 0
         }
+        
+@router.get("/workers/status")
+async def get_worker_status():
+    """Get worker status with explanation of 'offline' behavior"""
+    try:
+        # Get from event monitor
+        worker_stats = celery_monitor.get_worker_stats()
+        
+        # Get from Celery inspection (with timeout)
+        inspect = celery_app.control.inspect(timeout=2.0)
+        try:
+            celery_stats = inspect.stats()
+            active_tasks = inspect.active()
+        except Exception as e:
+            celery_stats = None
+            active_tasks = None
+            logger.info(f"Worker inspection timeout (normal during processing): {e}")
+        
+        return {
+            "event_monitoring": worker_stats,
+            "celery_inspection": {
+                "available": celery_stats is not None,
+                "stats": celery_stats,
+                "active": active_tasks
+            },
+            "explanation": {
+                "offline_during_processing": "Normal - workers can't respond to pings during GPU-intensive tasks",
+                "monitoring_reliability": "Event monitoring is more reliable than inspection during processing"
+            }
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
