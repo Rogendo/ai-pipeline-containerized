@@ -1,10 +1,11 @@
-# app/models/classifier_model.py (Updated)
+# app/models/classifier_model.py (Fixed)
 import logging
 from typing import Dict, List, Optional
 from datetime import datetime
 import torch
 import re
 import json
+import os
 from transformers import AutoTokenizer
 from transformers import DistilBertPreTrainedModel, DistilBertModel
 import torch.nn as nn
@@ -12,16 +13,6 @@ import gc
 from collections import Counter, defaultdict
 
 logger = logging.getLogger(__name__)
-
-# Load category lists
-with open("/opt/chl_ai/models/ai_models/MultiClassifier/main_categories.json") as f:
-    main_categories = json.load(f)
-with open("/opt/chl_ai/models/ai_models/MultiClassifier/sub_categories.json") as f:
-    sub_categories = json.load(f)
-with open("/opt/chl_ai/models/ai_models/MultiClassifier/interventions.json") as f:
-    interventions = json.load(f)
-with open("/opt/chl_ai/models/ai_models/MultiClassifier/priorities.json") as f:
-    priorities = json.load(f)
 
 class MultiTaskDistilBert(DistilBertPreTrainedModel):
     """Custom DistilBERT model for multi-task classification"""
@@ -59,8 +50,10 @@ class MultiTaskDistilBert(DistilBertPreTrainedModel):
 class ClassifierModel:
     """Multi-task classifier with intelligent chunking support"""
     
-    def __init__(self, model_path: str = '/opt/chl_ai/models/ai_models/MultiClassifier/multitask_distilbert'):
-        self.model_path = model_path
+    def __init__(self, model_path: str = None):
+        from ..config.settings import settings
+        
+        self.model_path = model_path or settings.get_model_path("classifier")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = None
         self.model = None
@@ -68,12 +61,53 @@ class ClassifierModel:
         self.load_time = None
         self.error = None
         self.max_length = 256  # Model's maximum token limit
-        self.category_info = {
-            "main_categories": main_categories,
-            "sub_categories": sub_categories,
-            "interventions": interventions,
-            "priorities": priorities
-        }
+        
+        # Category configs - will be loaded in load() method
+        self.category_info = {}
+        self.main_categories = []
+        self.sub_categories = []
+        self.interventions = []
+        self.priorities = []
+
+    def _load_category_configs(self):
+        """Load classifier configuration files"""
+        try:
+            config_files = {
+                "main_categories": "main_categories.json",
+                "sub_categories": "sub_categories.json", 
+                "interventions": "interventions.json",
+                "priorities": "priorities.json"
+            }
+            
+            configs = {}
+            for config_name, filename in config_files.items():
+                config_file_path = os.path.join(self.model_path, filename)
+                if not os.path.exists(config_file_path):
+                    raise FileNotFoundError(f"Config file not found: {config_file_path}")
+                
+                with open(config_file_path) as f:
+                    configs[config_name] = json.load(f)
+            
+            # Set the category lists
+            self.main_categories = configs["main_categories"]
+            self.sub_categories = configs["sub_categories"]
+            self.interventions = configs["interventions"]
+            self.priorities = configs["priorities"]
+            
+            self.category_info = {
+                "main_categories": self.main_categories,
+                "sub_categories": self.sub_categories,
+                "interventions": self.interventions,
+                "priorities": self.priorities
+            }
+            
+            logger.info(f"✅ Loaded classifier configs: {len(self.main_categories)} main categories, {len(self.sub_categories)} sub categories")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load classifier configs: {e}")
+            self.error = f"Config loading failed: {str(e)}"
+            return False
 
     def load(self) -> bool:
         """Load model and tokenizer"""
@@ -81,13 +115,27 @@ class ClassifierModel:
             logger.info(f"Loading classifier model: {self.model_path}")
             start_time = datetime.now()
             
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
+            # First load the category configs
+            if not self._load_category_configs():
+                return False
+            
+            # Load tokenizer and model from local path
+            model_files_path = os.path.join(self.model_path, "multitask_distilbert")
+            if not os.path.exists(model_files_path):
+                raise FileNotFoundError(f"Model files not found at: {model_files_path}")
+            
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_files_path,
+                local_files_only=True  # Force local loading
+            )
+            
             self.model = MultiTaskDistilBert.from_pretrained(
-                self.model_path,
-                num_main=len(main_categories),
-                num_sub=len(sub_categories),
-                num_interv=len(interventions),
-                num_priority=len(priorities)
+                model_files_path,
+                local_files_only=True,  # Force local loading
+                num_main=len(self.main_categories),
+                num_sub=len(self.sub_categories),
+                num_interv=len(self.interventions),
+                num_priority=len(self.priorities)
             )
             self.model = self.model.to(self.device)
             self.model.eval()
@@ -95,13 +143,13 @@ class ClassifierModel:
             self.loaded = True
             self.load_time = datetime.now()
             load_duration = (self.load_time - start_time).total_seconds()
-            logger.info(f"Classifier model loaded successfully in {load_duration:.2f}s")
+            logger.info(f"✅ Classifier model loaded successfully in {load_duration:.2f}s")
             return True
             
         except Exception as e:
             self.error = str(e)
             self.load_time = datetime.now()
-            logger.error(f"Failed to load classifier model: {e}")
+            logger.error(f"❌ Failed to load classifier model: {e}")
             return False
 
     def preprocess_text(self, text: str) -> str:
@@ -175,10 +223,10 @@ class ClassifierModel:
             priority_conf = torch.softmax(logits_priority, dim=1).max().item()
             
             return {
-                "main_category": main_categories[preds_main],
-                "sub_category": sub_categories[preds_sub],
-                "intervention": interventions[preds_interv],
-                "priority": str(priorities[preds_priority]),
+                "main_category": self.main_categories[preds_main],
+                "sub_category": self.sub_categories[preds_sub],
+                "intervention": self.interventions[preds_interv],
+                "priority": str(self.priorities[preds_priority]),
                 "confidence": round((main_conf + sub_conf + interv_conf + priority_conf) / 4, 3),
                 "confidence_breakdown": {
                     "main_category": round(main_conf, 3),
@@ -363,10 +411,10 @@ class ClassifierModel:
             "aggregation_strategy": "weighted_voting",
             "priority_escalation": True,
             "num_categories": {
-                "main": len(main_categories),
-                "sub": len(sub_categories),
-                "intervention": len(interventions),
-                "priority": len(priorities)
+                "main": len(self.main_categories),
+                "sub": len(self.sub_categories),
+                "intervention": len(self.interventions),
+                "priority": len(self.priorities)
             }
         }
         

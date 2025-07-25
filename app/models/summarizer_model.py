@@ -3,6 +3,7 @@
 import logging
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 import torch
+import os
 from datetime import datetime
 from typing import Dict, List, Optional
 import gc
@@ -12,8 +13,10 @@ logger = logging.getLogger(__name__)
 class SummarizationModel:
     """Summarization model with intelligent chunking and hierarchical summarization"""
 
-    def __init__(self, model_path: str = "/opt/chl_ai/models/summarization/best_model"):
-        self.model_path = model_path
+    def __init__(self, model_path: str = None):
+        from ..config.settings import settings
+        
+        self.model_path = model_path or settings.get_model_path("summarization")
         self.tokenizer = None
         self.model = None
         self.pipeline = None
@@ -26,21 +29,50 @@ class SummarizationModel:
     def load(self) -> bool:
         try:
             logger.info(f"📦 Loading summarization model from {self.model_path}")
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, local_files_only=True)
-            self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_path, local_files_only=True)
+            start_time = datetime.now()
+            
+            # Check if model path exists
+            if not os.path.exists(self.model_path):
+                raise FileNotFoundError(f"Summarization model path not found: {self.model_path}")
+            
+            # Check for required model files
+            required_files = ["config.json"]
+            for file in required_files:
+                file_path = os.path.join(self.model_path, file)
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(f"Required model file not found: {file_path}")
+            
+            # Load tokenizer and model with local_files_only
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_path, 
+                local_files_only=True  # Force local loading
+            )
+            
+            self.model = AutoModelForSeq2SeqLM.from_pretrained(
+                self.model_path, 
+                local_files_only=True  # Force local loading
+            )
+            
             self.model.to(self.device)
+            
+            # Create pipeline
             self.pipeline = pipeline(
                 "summarization", 
                 model=self.model, 
                 tokenizer=self.tokenizer, 
                 device=0 if torch.cuda.is_available() else -1
             )
+            
             self.loaded = True
             self.load_time = datetime.now()
-            logger.info("✅ Summarization model loaded successfully")
+            load_duration = (self.load_time - start_time).total_seconds()
+            
+            logger.info(f"✅ Summarization model loaded successfully in {load_duration:.2f}s")
             return True
+            
         except Exception as e:
             self.error = str(e)
+            self.load_time = datetime.now()
             logger.error(f"❌ Failed to load summarization model: {e}")
             return False
 

@@ -79,8 +79,11 @@ class ModelStatus:
 class ModelLoader:
     """Manages loading and status of all models with optional dependencies"""
     
-    def __init__(self, models_path: str = "/app/models"):
-        self.models_path = models_path
+    def __init__(self, models_path: str = None):
+        # Import settings here to avoid circular imports
+        from ..config.settings import settings
+        
+        self.models_path = models_path or settings.models_path
         self.models: Dict[str, Any] = {}
         self.model_status: Dict[str, ModelStatus] = {}
         
@@ -113,7 +116,7 @@ class ModelLoader:
             self.model_status[model_name] = ModelStatus(model_name)
             self._check_model_dependencies(model_name)
         
-        logger.info(f"ModelLoader initialized with models_path={models_path}")
+        logger.info(f"ModelLoader initialized with models_path={self.models_path}")
         logger.info(f"Available libraries: {list(AVAILABLE_LIBRARIES.keys())}")
     
     def _check_model_dependencies(self, model_name: str):
@@ -168,9 +171,6 @@ class ModelLoader:
                 logger.info(f"Skipping {model_name} - dependencies not available: {model_status.missing_dependencies}")
                 return
             
-            # Check if model files exist
-            model_path = os.path.join(self.models_path, model_name)
-            
             if model_name == "whisper":
                 from .whisper_model import whisper_model
                 
@@ -189,7 +189,6 @@ class ModelLoader:
                 return
             
             if model_name == "ner":
-                # NER uses spaCy models, not files in models directory
                 from .ner_model import ner_model
                 
                 success = ner_model.load()
@@ -220,7 +219,6 @@ class ModelLoader:
                     logger.error(f"❌ {model_name} model failed to load: {model_status.error}")
                 model_status.load_time = datetime.now()
                 return
-            
             
             if model_name == "translator":
                 from .translator_model import translator_model
@@ -255,22 +253,12 @@ class ModelLoader:
 
                 model_status.load_time = datetime.now()
                 return
-
-            if not os.path.exists(model_path):
-                model_status.error = f"Model path {model_path} not found"
-                model_status.load_time = datetime.now()
-                logger.warning(f"Model {model_name} path not found: {model_path}")
-                return
             
-            # TODO: Implement actual model loading here
-            # For now, just mark as "implementation pending"
-            start_time = datetime.now()
-            
-            # Simulate checking model files
+            # If we get here, the model isn't implemented yet
             model_status.error = f"Model loading implementation pending (dependencies available)"
             model_status.load_time = datetime.now()
             model_status.model_info = {
-                "model_path": model_path,
+                "model_path": os.path.join(self.models_path, model_name),
                 "dependencies_satisfied": True,
                 "description": self.model_dependencies[model_name]["description"]
             }
@@ -304,10 +292,13 @@ class ModelLoader:
         total_models = len(self.model_status)
         ready_for_implementation = len([m for m in self.model_status.values() if m.dependencies_available])
         missing_deps = len([m for m in self.model_status.values() if not m.dependencies_available])
+        loaded_models = len([m for m in self.model_status.values() if m.loaded])
         
         return {
             "available_libraries": AVAILABLE_LIBRARIES,
+            "models_path": self.models_path,
             "total_models": total_models,
+            "loaded_models": loaded_models,
             "ready_for_implementation": ready_for_implementation,
             "missing_dependencies": missing_deps,
             "ml_capabilities": {
@@ -352,9 +343,10 @@ class ModelLoader:
                 for name, status in self.model_status.items() 
                 if not status.dependencies_available}
 
-def get_failed_models(self) -> List[str]:
-        """Get list of failed models (for backward compatibility)"""
+    def get_failed_models(self) -> List[str]:
+        """Get list of failed models"""
         return [name for name, status in self.model_status.items() 
-                if status.error is not None]
+                if status.error is not None and status.dependencies_available]
+
 # Global model loader instance
 model_loader = ModelLoader()

@@ -2,12 +2,12 @@ services:
   ai-pipeline:
     build: .
     ports:
-      - "8000:8000"
+      - "8123:8123"
     environment:
       - DEBUG=true
       - LOG_LEVEL=INFO
       - SITE_ID=dev-local
-      - ENABLE_MODEL_LOADING=false
+      - ENABLE_MODEL_LOADING=true
     volumes:
       - ./logs:/app/logs
       - ./models:/app/models
