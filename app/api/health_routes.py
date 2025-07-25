@@ -3,6 +3,9 @@ from typing import Dict, Any
 import logging
 from datetime import datetime
 
+from app import celery_app
+from app.core import celery_monitor
+
 from ..core.resource_manager import resource_manager
 from ..core.request_queue import request_queue
 from ..models.model_loader import model_loader
@@ -126,4 +129,41 @@ async def resources_health():
         "gpu": gpu_info,
         "system": system_info,
         "queue": queue_status
+    }
+
+@router.get("/celery/status")
+async def get_celery_status():
+    """Check Celery worker and event monitoring status"""
+    
+    # Check event monitoring
+    monitor_status = celery_monitor.get_connection_status()
+    
+    # Try to ping Celery workers
+    try:
+        inspect = celery_app.control.inspect(timeout=2.0)
+        worker_stats = inspect.stats()
+        worker_ping = inspect.ping()
+        
+        celery_workers = {
+            "available": worker_stats is not None and len(worker_stats) > 0,
+            "count": len(worker_stats) if worker_stats else 0,
+            "ping_response": worker_ping,
+            "worker_names": list(worker_stats.keys()) if worker_stats else []
+        }
+    except Exception as e:
+        celery_workers = {
+            "available": False,
+            "count": 0,
+            "error": str(e),
+            "worker_names": []
+        }
+    
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "event_monitoring": monitor_status,
+        "celery_workers": celery_workers,
+        "recommendations": {
+            "start_worker": "celery -A app.celery_app worker --loglevel=info -E" if not celery_workers["available"] else None,
+            "status": "healthy" if celery_workers["available"] and monitor_status["is_monitoring"] else "needs_worker"
+        }
     }

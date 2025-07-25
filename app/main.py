@@ -26,14 +26,14 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     
     # Start Celery event monitoring
-    celery_monitor.start_monitoring()
+    # celery_monitor.start_monitoring()
     
     # Initialize models if enabled
-    if settings.enable_model_loading:
-        logger.info("Model loading enabled - starting model initialization...")
-        await model_loader.load_all_models()
-    else:
-        logger.info("Model loading disabled - models will show as 'not ready'")
+    # if settings.enable_model_loading:
+    #     logger.info("Model loading enabled - starting model initialization...")
+    #     await model_loader.load_all_models()
+    # else:
+    #     logger.info("Model loading disabled - models will show as 'not ready'")
     
     logger.info("Application startup complete")
     

@@ -1,7 +1,9 @@
 # app/api/audio_routes.py (Updated for Celery)
 import asyncio
 import json
+from socket import socket
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 import logging
@@ -336,3 +338,219 @@ async def get_worker_status():
         
     except Exception as e:
         return {"error": str(e)}
+    
+@router.post("/process-stream")
+async def process_audio_streaming(
+   audio: UploadFile = File(...),
+   language: Optional[str] = Form(None),
+   include_translation: bool = Form(True),
+   include_insights: bool = Form(True)
+):
+   """
+   Process audio with real-time updates via Server-Sent Events (SSE)
+   Eliminates the need for polling - server pushes updates to client
+   """
+   
+   # Validate audio file
+   if not audio.filename:
+       raise HTTPException(status_code=400, detail="No audio file provided")
+   
+   allowed_formats = [".wav", ".mp3", ".flac", ".m4a", ".ogg", ".webm"]
+   file_extension = os.path.splitext(audio.filename)[1].lower()
+   if file_extension not in allowed_formats:
+       raise HTTPException(
+           status_code=400,
+           detail=f"Unsupported audio format: {file_extension}. Supported: {allowed_formats}"
+       )
+   
+   max_size = 100 * 1024 * 1024  # 100MB
+   audio_bytes = await audio.read()
+   if len(audio_bytes) > max_size:
+       raise HTTPException(
+           status_code=400,
+           detail=f"File too large: {len(audio_bytes)/1024/1024:.1f}MB. Max: {max_size/1024/1024}MB"
+       )
+   
+   try:
+       # Submit task to Celery
+       task = process_audio_task.delay(
+           audio_bytes=audio_bytes,
+           filename=audio.filename,
+           language=language,
+           include_translation=include_translation,
+           include_insights=include_insights
+       )
+       task_id = task.id
+       
+       logger.info(f"🎙️ Started SSE stream for task {task_id} - {audio.filename}")
+       
+       async def event_stream():
+           """Stream real-time updates to client"""
+           last_status = None
+           last_progress = None
+           start_time = datetime.now()
+           max_duration = 300  # 5 minutes timeout
+           heartbeat_interval = 10  # Send heartbeat every 10 seconds
+           last_heartbeat = start_time
+           
+           # Send initial confirmation
+           initial_update = {
+               "task_id": task_id,
+               "status": "submitted",
+               "message": "Audio processing started",
+               "filename": audio.filename,
+               "file_size_mb": round(len(audio_bytes) / (1024 * 1024), 2),
+               "estimated_time": "15-60 seconds",
+               "timestamp": datetime.now().isoformat()
+           }
+           yield f"data: {json.dumps(initial_update)}\n\n"
+           
+           while True:
+               try:
+                   current_time = datetime.now()
+                   elapsed_seconds = (current_time - start_time).total_seconds()
+                   
+                   # Check timeout
+                   if elapsed_seconds > max_duration:
+                       timeout_msg = {
+                           "task_id": task_id,
+                           "status": "timeout",
+                           "error": "Processing timeout after 5 minutes",
+                           "elapsed_time": elapsed_seconds,
+                           "timestamp": current_time.isoformat()
+                       }
+                       yield f"data: {json.dumps(timeout_msg)}\n\n"
+                       logger.warning(f"⏰ Task {task_id} timed out after {elapsed_seconds:.1f}s")
+                       break
+                   
+                   # Get current task status
+                   task_result = celery_app.AsyncResult(task_id)
+                   current_status = task_result.status
+                   current_info = task_result.info if task_result.info else {}
+                   
+                   # Determine if we should send an update
+                   status_changed = current_status != last_status
+                   progress_changed = False
+                   need_heartbeat = (current_time - last_heartbeat).total_seconds() >= heartbeat_interval
+                   
+                   if isinstance(current_info, dict) and 'progress' in current_info:
+                       progress_changed = current_info['progress'] != last_progress
+                       last_progress = current_info['progress']
+                   
+                   should_send_update = status_changed or progress_changed or need_heartbeat
+                   
+                   if should_send_update:
+                       update = {
+                           "task_id": task_id,
+                           "status": current_status,
+                           "elapsed_time": round(elapsed_seconds, 1),
+                           "timestamp": current_time.isoformat()
+                       }
+                       
+                       # Add progress and step info if available
+                       if isinstance(current_info, dict):
+                           if 'progress' in current_info:
+                               update["progress"] = current_info['progress']
+                           if 'step' in current_info:
+                               update["step"] = current_info['step']
+                           if 'message' in current_info:
+                               update["message"] = current_info['message']
+                           if 'filename' in current_info:
+                               update["filename"] = current_info['filename']
+                       
+                       # Add helpful status messages for different states
+                       if current_status == "PENDING":
+                           update["message"] = "Task queued, waiting for available worker"
+                           update["progress"] = 0
+                       elif current_status == "PROCESSING":
+                           if 'step' not in update:
+                               update["step"] = "processing"
+                           if 'message' not in update:
+                               step = update.get('step', 'processing')
+                               update["message"] = f"Processing: {step}"
+                       elif current_status == "RETRY":
+                           update["message"] = "Task failed, retrying automatically"
+                       
+                       # Send heartbeat indicator
+                       if need_heartbeat and not status_changed and not progress_changed:
+                           update["heartbeat"] = True
+                           last_heartbeat = current_time
+                       
+                       yield f"data: {json.dumps(update)}\n\n"
+                       last_status = current_status
+                   
+                   # Handle completed states
+                   if current_status in ['SUCCESS', 'FAILURE', 'REVOKED']:
+                       if current_status == 'SUCCESS':
+                           final_result = {
+                               "task_id": task_id,
+                               "status": "completed",
+                               "result": task_result.result,
+                               "processing_time": round(elapsed_seconds, 2),
+                               "timestamp": current_time.isoformat(),
+                               "message": "Audio processing completed successfully"
+                           }
+                           logger.info(f"✅ SSE task {task_id} completed in {elapsed_seconds:.1f}s")
+                           
+                       elif current_status == 'FAILURE':
+                           error_info = str(current_info) if current_info else "Unknown error"
+                           final_result = {
+                               "task_id": task_id,
+                               "status": "failed", 
+                               "error": error_info,
+                               "processing_time": round(elapsed_seconds, 2),
+                               "timestamp": current_time.isoformat(),
+                               "message": "Audio processing failed"
+                           }
+                           logger.error(f"❌ SSE task {task_id} failed after {elapsed_seconds:.1f}s: {error_info}")
+                           
+                       elif current_status == 'REVOKED':
+                           final_result = {
+                               "task_id": task_id,
+                               "status": "cancelled",
+                               "processing_time": round(elapsed_seconds, 2),
+                               "timestamp": current_time.isoformat(),
+                               "message": "Audio processing was cancelled"
+                           }
+                           logger.info(f"🚫 SSE task {task_id} was cancelled after {elapsed_seconds:.1f}s")
+                       
+                       yield f"data: {json.dumps(final_result)}\n\n"
+                       break
+                   
+                   # Wait before next check
+                   await asyncio.sleep(2)
+                   
+               except Exception as e:
+                   logger.error(f"❌ SSE stream error for task {task_id}: {e}")
+                   error_update = {
+                       "task_id": task_id,
+                       "status": "stream_error",
+                       "error": str(e),
+                       "elapsed_time": (datetime.now() - start_time).total_seconds(),
+                       "timestamp": datetime.now().isoformat(),
+                       "message": "Streaming connection error"
+                   }
+                   yield f"data: {json.dumps(error_update)}\n\n"
+                   break
+           
+           # Stream cleanup
+           logger.info(f"🔚 SSE stream ended for task {task_id}")
+       
+       return StreamingResponse(
+           event_stream(), 
+           media_type="text/event-stream",
+           headers={
+               "Cache-Control": "no-cache",
+               "Connection": "keep-alive",
+               "X-Accel-Buffering": "no",  # Disable nginx buffering
+               "Access-Control-Allow-Origin": "*",  # Enable CORS for SSE
+               "Access-Control-Allow-Headers": "Cache-Control",
+           }
+       )
+       
+   except Exception as e:
+       logger.error(f"❌ SSE audio processing failed for {audio.filename}: {e}")
+       raise HTTPException(
+           status_code=500, 
+           detail=f"Failed to start audio processing: {str(e)}"
+       )
