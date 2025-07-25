@@ -29,18 +29,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     
     # API server doesn't need Celery monitoring or model loading
-    if settings.enable_model_loading:
-        logger.info("🔄 Worker mode - loading models and starting Celery monitoring...")
-        
-        # Start Celery event monitoring
-        try:
-            from .core.celery_monitor import celery_monitor
-            celery_monitor.start_monitoring()
-            logger.info("✅ Event monitoring started")
-        except Exception as e:
-            logger.warning(f"⚠️ Event monitoring failed to start: {e}")
-        # Initialize models
-        logger.info("✅ Model loading enabled - starting model initialization...")
+    if settings.worker_mode or settings.enable_model_loading:
+        logger.info("🔄 Worker mode - loading models...")
         await model_loader.load_all_models()
     else:
         logger.info("🌐 API server mode - models handled by Celery workers")

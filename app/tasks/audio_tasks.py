@@ -1,5 +1,6 @@
 # app/tasks/audio_tasks.py (Updated)
 import json
+import os
 import socket
 from celery import current_task
 from celery.signals import worker_init
@@ -22,30 +23,39 @@ def init_worker(**kwargs):
     global worker_model_loader
     
     logger.info("🔄 Initializing models in Celery worker...")
+    logger.info(f"🔍 Models path: {os.environ.get('MODELS_PATH', '/app/models')}")
+    
+    # Check if models directory exists
+    models_path = "/app/models"
+    if not os.path.exists(models_path):
+        logger.error(f"❌ Models directory not found: {models_path}")
+        return
+    
+    # List available models
+    try:
+        model_dirs = os.listdir(models_path)
+        logger.info(f"📁 Available model directories: {model_dirs}")
+    except Exception as e:
+        logger.error(f"❌ Cannot list models directory: {e}")
+        return
     
     try:
-        # Import here to avoid circular imports
         from ..models.model_loader import ModelLoader
-        
-        # Create a new model loader instance for this worker
         worker_model_loader = ModelLoader()
         
-        # Load models synchronously (Celery workers can't use async)
-        import asyncio
+        # Add sync wrapper for async function
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(worker_model_loader.load_all_models())
         loop.close()
         
-        logger.info("✅ Models loaded successfully in Celery worker")
-        
-        # Log which models are ready
         ready_models = worker_model_loader.get_ready_models()
-        logger.info(f"✅ Ready models in worker: {ready_models}")
+        logger.info(f"✅ Models loaded successfully in Celery worker: {ready_models}")
         
     except Exception as e:
         logger.error(f"❌ Failed to load models in Celery worker: {e}")
-        worker_model_loader = None
+        import traceback
+        logger.error(traceback.format_exc())
 
 def get_worker_models():
     """Get the worker's model loader instance"""

@@ -21,7 +21,8 @@ class Settings(BaseSettings):
     # Model Configuration
     model_cache_size: int = 8192
     cleanup_interval: int = 3600
-    enable_model_loading: bool = True
+    enable_model_loading: bool = False
+    worker_mode: bool = False
     
     # Security
     site_id: str = "unknown-site"

@@ -32,7 +32,6 @@ services:
       - DOCKER_CONTAINER=true
     volumes:
       - ./logs:/app/logs
-      - ./models:/app/models
       - ./temp:/app/temp
     restart: unless-stopped
     healthcheck:
@@ -59,7 +58,6 @@ services:
       - DOCKER_CONTAINER=true
     volumes:
       - ./logs:/app/logs
-      - ./models:/app/models
       - ./temp:/app/temp
     command: celery -A app.celery_app worker --loglevel=info -E --pool=solo
     restart: unless-stopped
