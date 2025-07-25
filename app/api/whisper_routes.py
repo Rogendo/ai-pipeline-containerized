@@ -165,9 +165,9 @@ async def whisper_demo():
             "required": "audio file (multipart/form-data)",
             "optional": "language parameter",
             "examples": {
-                "auto_detect": "curl -X POST -F 'audio=@sample.wav' http://localhost:8000/whisper/transcribe",
-                "swahili": "curl -X POST -F 'audio=@sample.wav' -F 'language=sw' http://localhost:8000/whisper/transcribe",
-                "english": "curl -X POST -F 'audio=@sample.wav' -F 'language=en' http://localhost:8000/whisper/transcribe"
+                "auto_detect": "curl -X POST -F 'audio=@sample.wav' http://localhost:8123/whisper/transcribe",
+                "swahili": "curl -X POST -F 'audio=@sample.wav' -F 'language=sw' http://localhost:8123/whisper/transcribe",
+                "english": "curl -X POST -F 'audio=@sample.wav' -F 'language=en' http://localhost:8123/whisper/transcribe"
             },
             "supported_formats": [".wav", ".mp3", ".flac", ".m4a", ".ogg", ".webm"],
             "max_file_size": "100MB",

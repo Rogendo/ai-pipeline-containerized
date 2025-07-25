@@ -94,13 +94,13 @@ docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 ```bash
 # Check API health
-curl http://localhost:8000/health/detailed
+curl http://localhost:8123/health/detailed
 
 # Check worker status
-curl http://localhost:8000/audio/workers/status
+curl http://localhost:8123/audio/workers/status
 
 # Access API documentation
-open http://localhost:8000/docs
+open http://localhost:8123/docs
 ```
 
 ### 4. Process Your First Audio File
@@ -111,13 +111,13 @@ curl -X POST \
   -F "audio=@sample.wav" \
   -F "language=sw" \
   -F "include_translation=true" \
-  http://localhost:8000/audio/process
+  http://localhost:8123/audio/process
 
 # Real-time streaming updates
 curl -X POST \
   -F "audio=@sample.wav" \
   -F "language=sw" \
-  http://localhost:8000/audio/process-stream
+  http://localhost:8123/audio/process-stream
 ```
 
 ## 📋 API Documentation
@@ -272,7 +272,7 @@ services:
       - ./models:/app/models
       - ./logs:/app/logs
     ports:
-      - "8000:8000"
+      - "8123:8123"
 
   celery-worker:
     build: .
@@ -352,16 +352,16 @@ spec:
 
 ```bash
 # System health with detailed metrics
-curl http://localhost:8000/health/detailed
+curl http://localhost:8123/health/detailed
 
 # Model status and dependencies
-curl http://localhost:8000/health/models
+curl http://localhost:8123/health/models
 
 # Resource utilization
-curl http://localhost:8000/health/resources
+curl http://localhost:8123/health/resources
 
 # Processing queue status
-curl http://localhost:8000/audio/queue/status
+curl http://localhost:8123/audio/queue/status
 ```
 
 ### Logging Configuration
@@ -392,7 +392,7 @@ LOGGING_CONFIG = {
 prometheus-client==0.17.1
 
 # Metrics endpoint
-curl http://localhost:8000/metrics
+curl http://localhost:8123/metrics
 ```
 
 ## 🧪 Testing

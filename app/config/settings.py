@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     # Model Configuration
     model_cache_size: int = 8192
     cleanup_interval: int = 3600
-    enable_model_loading: bool = True  # Changed to True
+    enable_model_loading: bool = True
     
     # Security
     site_id: str = "unknown-site"
@@ -37,15 +37,24 @@ class Settings(BaseSettings):
     logs_path: str = "/app/logs"
     temp_path: str = "/app/temp"
     
+    # Redis Configuration - Updated for Docker
     redis_url: str = "redis://localhost:6379/0"
-    redis_task_db: int = 1 
+    redis_task_db: int = 1
+    
+    # Docker detection
+    docker_container: bool = False
     
     def __post_init__(self):
         """Auto-detect if running in container or locally"""
         # Detect if running in Docker container
-        if os.path.exists("/.dockerenv") or os.environ.get("DOCKER_CONTAINER"):
+        if (os.path.exists("/.dockerenv") or 
+            os.environ.get("DOCKER_CONTAINER") or 
+            self.docker_container):
             # Running in container - use container paths
             self.models_path = "/app/models"
+            # Update Redis URL for Docker network if not explicitly set
+            if self.redis_url == "redis://localhost:6379/0":
+                self.redis_url = "redis://redis:6379/0"  # Use Docker service name
         else:
             # Running locally - use relative paths
             project_root = Path(__file__).parent.parent.parent
@@ -64,15 +73,22 @@ class Settings(BaseSettings):
     
     class Config:
         env_file = ".env"
+        case_sensitive = False
 
 # Initialize settings and auto-detect paths
 settings = Settings()
 settings.__post_init__()
 
+# Redis clients with error handling
 try:
     redis_client = redis.from_url(settings.redis_url)
-    redis_task_client = redis.from_url(f"redis://localhost:6379/{settings.redis_task_db}")
+    redis_task_client = redis.from_url(f"redis://{'redis' if settings.docker_container else 'localhost'}:6379/{settings.redis_task_db}")
+    
+    # Test connection
+    redis_client.ping()
+    print(f"✅ Redis connected: {settings.redis_url}")
+    
 except Exception as e:
-    print(f"Warning: Redis connection failed: {e}")
+    print(f"⚠️ Redis connection failed: {e}")
     redis_client = None
     redis_task_client = None

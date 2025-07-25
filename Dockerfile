@@ -3,7 +3,7 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (including curl for health checks)
 RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -22,18 +22,19 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
-# Copy models into container BEFORE copying app code
+# Copy models into container (container-baked approach)
 COPY models/ /app/models/
 
 # Copy application code
 COPY app/ /app/app/
 
-# Create __init__.py files (FIXED PATHS)
+# Create __init__.py files
 RUN touch /app/app/__init__.py \
     && touch /app/app/core/__init__.py \
     && touch /app/app/api/__init__.py \
     && touch /app/app/models/__init__.py \
-    && touch /app/app/config/__init__.py
+    && touch /app/app/config/__init__.py \
+    && touch /app/app/tasks/__init__.py
 
 # Set ownership
 RUN chown -R appuser:appuser /app
@@ -44,9 +45,9 @@ USER appuser
 # Expose port
 EXPOSE 8123
 
-# Health check
+# Health check for FastAPI
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8123/health || exit 1
 
-# Run the application
+# Default command (can be overridden in docker-compose)
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8123"]
