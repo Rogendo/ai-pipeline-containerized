@@ -53,86 +53,65 @@ def get_worker_models():
     return worker_model_loader
 
 @celery_app.task(bind=True, name="process_audio_task")
-def process_audio_task(
-    self,
-    audio_bytes: bytes,
-    filename: str,
-    language: Optional[str] = None,
-    include_translation: bool = True,
-    include_insights: bool = True
-):
-    """
-    Celery task for complete audio processing with worker models
-    """
-    # Store in Redis for reliable tracking
+def process_audio_task(self, audio_bytes, filename, language=None, include_translation=True, include_insights=True):
+    """Simplified error handling to avoid serialization issues"""
+    
+    # Store basic task info in Redis (not complex objects)
     task_info = {
         "task_id": self.request.id,
         "filename": filename,
         "started": datetime.now().isoformat(),
-        "worker": socket.gethostname(),
         "status": "processing"
     }
     
-    redis_task_client.hset(
-        "active_audio_tasks", 
-        self.request.id, 
-        json.dumps(task_info)
-    )
     try:
-        # Update task state
-        self.update_state(
-            state="PROCESSING",
-            meta={
-                "step": "initializing",
-                "filename": filename,
-                "progress": 0
-            }
-        )
+        redis_task_client.hset("active_audio_tasks", self.request.id, json.dumps(task_info))
+    except Exception:
+        pass  # Don't fail if Redis logging fails
+    
+    try:
+        # MINIMAL state updates - only basic progress
+        self.update_state(state="PROCESSING", meta={"progress": 10, "step": "starting"})
         
         # Get worker models
         models = get_worker_models()
         if not models:
-            raise RuntimeError("Models not loaded in Celery worker. Check worker logs.")
+            # SIMPLE error - no complex objects
+            raise RuntimeError("Models not loaded in worker")
         
-        # Check pipeline readiness using worker models
-        required_models = ["whisper", "ner", "classifier_model", "translator", "summarizer"]
-        missing_models = []
-        for model_name in required_models:
-            if not models.is_model_ready(model_name):
-                missing_models.append(model_name)
-        
-        if missing_models:
-            raise RuntimeError(f"Pipeline not ready in worker. Missing models: {missing_models}")
-        
-        # Process the audio using worker models
+        # Process the audio
         result = _process_audio_sync_worker(
             self, models, audio_bytes, filename, language, 
             include_translation, include_insights
         )
         
-        # Remove from Redis on completion
-        redis_task_client.hdel("active_audio_tasks", self.request.id)
+        # Clean up Redis
+        try:
+            redis_task_client.hdel("active_audio_tasks", self.request.id)
+        except Exception:
+            pass
         
+        # Return simple result - no complex nested objects
         return {
             "status": "completed",
             "filename": filename,
-            "processing_time": result["pipeline_info"]["total_time"],
-            "result": result
+            "result": result  # Make sure this is JSON-serializable
         }
         
     except Exception as e:
-        logger.error(f"Audio processing task failed: {e}")
-        # Better exception handling for Celery
-        self.update_state(
-            state="FAILURE",
-            meta={
-                "error": str(e),
-                "filename": filename,
-                "error_type": type(e).__name__
-            }
-        )
-        # Re-raise with proper exception type
-        raise type(e)(str(e))
+        logger.error(f"Audio processing failed: {e}")
+        
+        # Clean up Redis
+        try:
+            redis_task_client.hdel("active_audio_tasks", self.request.id)
+        except Exception:
+            pass
+        
+        # SIMPLE error handling - no complex state updates
+        error_msg = str(e)[:500]  # Limit error message length
+        
+        # Let Celery handle the failure automatically
+        raise RuntimeError(error_msg)
 
 def _process_audio_sync_worker(
     task_instance,
@@ -403,7 +382,7 @@ def process_audio_quick_task(
                 "error_type": type(e).__name__
             }
         )
-        raise type(e)(str(e))
+        raise e
 
 def _generate_insights(transcript: str, translation: Optional[str], 
                       entities: Dict, classification: Dict, summary: str) -> Dict[str, Any]:

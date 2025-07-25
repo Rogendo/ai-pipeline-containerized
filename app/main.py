@@ -33,9 +33,12 @@ async def lifespan(app: FastAPI):
         logger.info("🔄 Worker mode - loading models and starting Celery monitoring...")
         
         # Start Celery event monitoring
-        if 'celery_monitor' in globals():
+        try:
+            from .core.celery_monitor import celery_monitor
             celery_monitor.start_monitoring()
-        
+            logger.info("✅ Event monitoring started")
+        except Exception as e:
+            logger.warning(f"⚠️ Event monitoring failed to start: {e}")
         # Initialize models
         logger.info("✅ Model loading enabled - starting model initialization...")
         await model_loader.load_all_models()

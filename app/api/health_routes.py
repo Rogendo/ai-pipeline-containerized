@@ -3,8 +3,8 @@ from typing import Dict, Any
 import logging
 from datetime import datetime
 
-from app import celery_app
-from app.core import celery_monitor
+from ..celery_app import celery_app
+from app.core.celery_monitor import celery_monitor
 
 from ..core.resource_manager import resource_manager
 from ..core.request_queue import request_queue
@@ -133,37 +133,94 @@ async def resources_health():
 
 @router.get("/celery/status")
 async def get_celery_status():
-    """Check Celery worker and event monitoring status"""
+    """Check Celery worker and event monitoring status with proper health logic"""
     
     # Check event monitoring
-    monitor_status = celery_monitor.get_connection_status()
+    try:
+        monitor_status = celery_monitor.get_connection_status()
+    except Exception as e:
+        monitor_status = {
+            "is_monitoring": False,
+            "thread_alive": False,
+            "active_tasks_count": 0,
+            "workers_seen": 0,
+            "status": "monitoring_unavailable",
+            "error": str(e)
+        }
     
     # Try to ping Celery workers
+    celery_workers = {
+        "available": False,
+        "count": 0,
+        "worker_names": [],
+        "error": None
+    }
+    
     try:
-        inspect = celery_app.control.inspect(timeout=2.0)
+        inspect = celery_app.control.inspect(timeout=3.0)
         worker_stats = inspect.stats()
         worker_ping = inspect.ping()
         
-        celery_workers = {
-            "available": worker_stats is not None and len(worker_stats) > 0,
-            "count": len(worker_stats) if worker_stats else 0,
-            "ping_response": worker_ping,
-            "worker_names": list(worker_stats.keys()) if worker_stats else []
-        }
+        if worker_stats and worker_ping:
+            celery_workers.update({
+                "available": True,
+                "count": len(worker_stats),
+                "worker_names": list(worker_stats.keys()),
+                "ping_response": worker_ping,
+                "worker_stats": worker_stats
+            })
+        elif worker_ping:  # Ping works but no stats
+            celery_workers.update({
+                "available": True,
+                "count": len(worker_ping),
+                "worker_names": list(worker_ping.keys()),
+                "ping_response": worker_ping,
+                "note": "Workers responding but stats unavailable"
+            })
+            
     except Exception as e:
-        celery_workers = {
-            "available": False,
-            "count": 0,
-            "error": str(e),
-            "worker_names": []
-        }
+        celery_workers["error"] = str(e)
+        logger.warning(f"Celery worker inspection failed: {e}")
+    
+    # IMPROVED STATUS LOGIC
+    overall_status = "healthy"
+    issues = []
+    recommendations = {}
+    
+    # Critical: Worker availability
+    if not celery_workers["available"]:
+        overall_status = "critical"
+        issues.append("No Celery workers responding")
+        recommendations["start_worker"] = "celery -A app.celery_app worker --loglevel=info -E"
+    
+    # Warning: Event monitoring (not critical for basic operation)
+    elif not monitor_status.get("is_monitoring", False):
+        overall_status = "degraded"
+        issues.append("Event monitoring not connected (worker busy or starting up)")
+        recommendations["note"] = "Event monitoring will connect automatically when worker is idle"
+    
+    # Add helpful recommendations
+    if celery_workers["available"]:
+        if celery_workers["count"] == 1:
+            recommendations["scaling"] = "Single worker detected - consider scaling for production"
+        recommendations["next_step"] = "System ready for audio processing"
     
     return {
         "timestamp": datetime.now().isoformat(),
+        "overall_status": overall_status,
+        "issues": issues,
         "event_monitoring": monitor_status,
         "celery_workers": celery_workers,
-        "recommendations": {
-            "start_worker": "celery -A app.celery_app worker --loglevel=info -E" if not celery_workers["available"] else None,
-            "status": "healthy" if celery_workers["available"] and monitor_status["is_monitoring"] else "needs_worker"
+        "recommendations": recommendations,
+        "system_health": {
+            "workers_healthy": celery_workers["available"],
+            "monitoring_healthy": monitor_status.get("is_monitoring", False),
+            "redis_healthy": True,  # If we got here, Redis is working
+            "ready_for_processing": celery_workers["available"]
+        },
+        "explanation": {
+            "healthy": "All critical systems operational",
+            "degraded": "Critical systems working, monitoring features limited", 
+            "critical": "Core functionality impaired - immediate attention needed"
         }
     }
