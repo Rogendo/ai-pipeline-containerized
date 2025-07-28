@@ -108,6 +108,10 @@ class ModelLoader:
             "summarizer": {
                 "required": ["torch", "transformers", "numpy"],
                 "description": "Text summarization"
+            },
+            "qa_model": {
+                "required": ["torch", "transformers", "numpy"],
+                "description": "Quality Assuarance Scoring of the Calls"
             }
         }
         
@@ -253,6 +257,25 @@ class ModelLoader:
 
                 model_status.load_time = datetime.now()
                 return
+            
+            if model_name == "qa_model":
+                from .qa_model import QAModel
+                
+
+                try:
+                    qa_model = QAModel(model_path=os.path.join(self.models_path, model_name))
+                    self.models[model_name] = qa_model
+                    model_status.loaded = True
+                    model_status.error = None
+                    model_status.model_info = qa_model.get_model_info()
+                    logger.info("✅ QA model loaded successfully")
+                except Exception as e:
+                    model_status.error = str(e)
+                    logger.error(f"❌ QA model failed to load: {model_status.error}")
+
+                model_status.load_time = datetime.now()
+                return
+            
             
             # If we get here, the model isn't implemented yet
             model_status.error = f"Model loading implementation pending (dependencies available)"

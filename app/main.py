@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from .config.settings import settings
-from .api import health_routes, queue_routes, ner_routes, translator_routes, summarizer_routes, classifier_route, whisper_routes, audio_routes, realtime_routes
+from .api import health_routes, queue_routes, ner_routes, translator_routes, summarizer_routes, classifier_route, whisper_routes, audio_routes, realtime_routes, qa_route
 from .models.model_loader import model_loader
 from .core.resource_manager import resource_manager
 
@@ -69,6 +69,7 @@ app.include_router(classifier_route.router)
 app.include_router(whisper_routes.router)
 app.include_router(audio_routes.router)
 app.include_router(realtime_routes.router)
+app.include_router(qa_route.router)
 
 @app.get("/")
 async def root():
@@ -90,7 +91,8 @@ async def root():
             "quick_audio_analysis": "/audio/analyze",
             "celery_status": "/health/celery/status",
             "realtime_status": "/realtime/status",
-            "realtime_transcribe": "/realtime/transcribe"
+            "realtime_transcribe": "/realtime/transcribe",
+            "qa_predict": "/qa/predict"
         }
     }
 
