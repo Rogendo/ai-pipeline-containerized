@@ -25,6 +25,9 @@ celery_app.conf.update(
     result_serializer="json", 
     accept_content=["json"],
     
+    worker_pool='solo',
+    worker_concurrency=1,  # Only 1 task at a time for GPU
+    
     # Task execution settings
     task_soft_time_limit=300,
     task_time_limit=600,

@@ -83,6 +83,8 @@ class ModelLoader:
         # Import settings here to avoid circular imports
         from ..config.settings import settings
         
+        settings.initialize_paths()
+        
         self.models_path = models_path or settings.models_path
         self.models: Dict[str, Any] = {}
         self.model_status: Dict[str, ModelStatus] = {}

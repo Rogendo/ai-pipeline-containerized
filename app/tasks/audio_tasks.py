@@ -18,49 +18,214 @@ logger = logging.getLogger(__name__)
 worker_model_loader = None
 
 @worker_init.connect
+def debug_worker_init(**kwargs):
+    """Debug worker initialization paths"""
+    logger.info("🔍 DEBUG: Worker initialization starting...")
+    
+    try:
+        # Debug current working directory
+        cwd = os.getcwd()
+        logger.info(f"🔍 Worker CWD: {cwd}")
+        
+        # Debug settings import
+        from ..config.settings import settings
+        logger.info(f"🔍 Worker models_path: {settings.models_path}")
+        logger.info(f"🔍 Worker models exists: {os.path.exists(settings.models_path)}")
+        
+        if os.path.exists(settings.models_path):
+            contents = os.listdir(settings.models_path)
+            logger.info(f"🔍 Worker models contents: {contents}")
+        else:
+            logger.error(f"🔍 Worker models directory NOT FOUND: {settings.models_path}")
+            
+            # Check if we can find it relatively
+            for possible_path in ["./models", "../models", "models"]:
+                if os.path.exists(possible_path):
+                    logger.info(f"🔍 Found models at relative path: {os.path.abspath(possible_path)}")
+                    
+    except Exception as e:
+        logger.error(f"🔍 Debug failed: {e}")
+        
+@worker_init.connect
 def init_worker(**kwargs):
-    """Initialize models when Celery worker starts"""
+    """Initialize models and connections when Celery worker starts"""
     global worker_model_loader
     
-    logger.info("🔄 Initializing models in Celery worker...")
-    logger.info(f"🔍 Models path: {os.environ.get('MODELS_PATH', '/app/models')}")
-    
-    # Check if models directory exists
-    models_path = "/app/models"
-    if not os.path.exists(models_path):
-        logger.error(f"❌ Models directory not found: {models_path}")
-        return
-    
-    # List available models
-    try:
-        model_dirs = os.listdir(models_path)
-        logger.info(f"📁 Available model directories: {model_dirs}")
-    except Exception as e:
-        logger.error(f"❌ Cannot list models directory: {e}")
-        return
+    logger.info("🔄 Initializing Celery worker...")
     
     try:
+        # Step 1: Initialize Redis connections
+        logger.info("📡 Initializing Redis connections...")
+        from ..config.settings import initialize_redis
+        redis_success = initialize_redis()
+        if not redis_success:
+            logger.warning("⚠️ Redis initialization failed, but continuing...")
+        
+        # Step 2: Debug worker context
+        logger.info("🔍 DEBUG: Worker context analysis...")
+        cwd = os.getcwd()
+        logger.info(f"🔍 Worker CWD: {cwd}")
+        
+        # Step 3: Initialize settings and paths
+        logger.info("📁 Initializing paths...")
+        from ..config.settings import settings
+        models_path = settings.initialize_paths()
+        logger.info(f"🔍 Worker models_path: {models_path}")
+        logger.info(f"🔍 Worker models exists: {os.path.exists(models_path)}")
+        
+        if os.path.exists(models_path):
+            contents = os.listdir(models_path)
+            logger.info(f"🔍 Worker models contents: {contents}")
+        else:
+            logger.error(f"🔍 Worker models directory NOT FOUND: {models_path}")
+            
+            # Check for alternative paths
+            for possible_path in ["./models", "../models", "models", "/app/models"]:
+                abs_path = os.path.abspath(possible_path)
+                if os.path.exists(abs_path):
+                    logger.info(f"🔍 Found models at alternative path: {abs_path}")
+                    logger.info(f"🔍 Contents: {os.listdir(abs_path)}")
+            
+            # Don't fail completely - let model loading handle missing paths
+            logger.warning("⚠️ Models directory not found, but continuing with model loading...")
+        
+        # Step 4: Create model loader instance
+        logger.info("🤖 Creating ModelLoader instance...")
         from ..models.model_loader import ModelLoader
         worker_model_loader = ModelLoader()
         
-        # Add sync wrapper for async function
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(worker_model_loader.load_all_models())
-        loop.close()
+        # Step 5: Load models asynchronously (converted to sync for Celery)
+        logger.info("📦 Loading models in Celery worker...")
+        import asyncio
         
+        # Create new event loop for this worker process
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Load all models
+        try:
+            loop.run_until_complete(worker_model_loader.load_all_models())
+        finally:
+            # Don't close the loop - it might be needed later
+            pass
+        
+        # Step 6: Verify model loading results
         ready_models = worker_model_loader.get_ready_models()
-        logger.info(f"✅ Models loaded successfully in Celery worker: {ready_models}")
+        implementable_models = worker_model_loader.get_implementable_models()
+        blocked_models = worker_model_loader.get_blocked_models()
+        failed_models = worker_model_loader.get_failed_models()
+        
+        logger.info("📊 Model loading summary:")
+        logger.info(f"✅ Ready models: {ready_models}")
+        logger.info(f"🔄 Implementable models: {implementable_models}")
+        logger.info(f"🚫 Blocked models: {blocked_models}")
+        logger.info(f"❌ Failed models: {failed_models}")
+        
+        # Step 7: Store worker information in Redis (optional)
+        try:
+            from ..config.settings import redis_task_client
+            if redis_task_client:
+                worker_info = {
+                    "worker_id": os.getpid(),
+                    "models_loaded": len(ready_models),
+                    "ready_models": ready_models,
+                    "startup_time": datetime.now().isoformat(),
+                    "models_path": models_path
+                }
+                redis_task_client.hset(
+                    "worker_info", 
+                    f"worker_{os.getpid()}", 
+                    json.dumps(worker_info)
+                )
+                logger.info(f"📋 Worker info stored in Redis for PID {os.getpid()}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to store worker info in Redis: {e}")
+        
+        # Step 8: Final status
+        if len(ready_models) > 0:
+            logger.info(f"✅ Worker initialization completed successfully!")
+            logger.info(f"🚀 Worker ready to process tasks with {len(ready_models)} models")
+        elif len(implementable_models) > 0:
+            logger.warning(f"⚠️ Worker initialized but some models need dependencies")
+            logger.info(f"🔧 Implementable models: {implementable_models}")
+            logger.info(f"🚫 Missing dependencies for: {blocked_models}")
+        else:
+            logger.error(f"❌ Worker initialized but no models are ready!")
+            logger.error(f"🚫 Blocked models: {blocked_models}")
+            logger.error(f"❌ Failed models: {failed_models}")
+            
+            # Don't raise exception - let the worker start anyway
+            logger.warning("⚠️ Worker will start but audio processing will fail until models are fixed")
         
     except Exception as e:
-        logger.error(f"❌ Failed to load models in Celery worker: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"❌ Critical error during worker initialization: {e}")
+        logger.exception("Full exception traceback:")
+        
+        # Store error information
+        worker_model_loader = None
+        
+        # Try to store error info in Redis
+        try:
+            from ..config.settings import redis_task_client
+            if redis_task_client:
+                error_info = {
+                    "worker_id": os.getpid(),
+                    "error": str(e),
+                    "error_time": datetime.now().isoformat(),
+                    "error_type": type(e).__name__
+                }
+                redis_task_client.hset(
+                    "worker_errors",
+                    f"worker_{os.getpid()}",
+                    json.dumps(error_info)
+                )
+        except:
+            pass  # Don't fail on Redis error logging
+        
+        # Don't raise the exception - let Celery start the worker anyway
+        # The tasks will fail gracefully with "models not loaded" errors
+        logger.warning("⚠️ Worker starting in degraded mode - tasks will fail until models are fixed")
+
 
 def get_worker_models():
     """Get the worker's model loader instance"""
     global worker_model_loader
     return worker_model_loader
+
+
+def get_worker_status():
+    """Get detailed worker status for debugging"""
+    global worker_model_loader
+    
+    if worker_model_loader is None:
+        return {
+            "status": "not_initialized",
+            "error": "Worker models not loaded",
+            "ready_models": []
+        }
+    
+    try:
+        return {
+            "status": "ready",
+            "ready_models": worker_model_loader.get_ready_models(),
+            "implementable_models": worker_model_loader.get_implementable_models(),
+            "blocked_models": worker_model_loader.get_blocked_models(),
+            "failed_models": worker_model_loader.get_failed_models(),
+            "worker_pid": os.getpid(),
+            "models_path": worker_model_loader.models_path
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "worker_pid": os.getpid()
+        }
 
 @celery_app.task(bind=True, name="process_audio_task")
 def process_audio_task(self, audio_bytes, filename, language=None, include_translation=True, include_insights=True):

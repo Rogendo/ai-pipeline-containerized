@@ -28,9 +28,23 @@ async def lifespan(app: FastAPI):
     """Application lifespan events"""
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     
+    # Initialize paths
+    settings.initialize_paths()
+    
     # API server doesn't need Celery monitoring or model loading
-    if settings.worker_mode or settings.enable_model_loading:
-        logger.info("🔄 Worker mode - loading models...")
+    if settings.enable_model_loading:
+        logger.info("🔄 Worker mode - loading models and starting Celery monitoring...")
+        
+        # Start Celery event monitoring
+        try:
+            from .core.celery_monitor import celery_monitor
+            celery_monitor.start_monitoring()
+            logger.info("✅ Event monitoring started")
+        except Exception as e:
+            logger.warning(f"⚠️ Event monitoring failed to start: {e}")
+        
+        # Initialize models
+        logger.info("✅ Model loading enabled - starting model initialization...")
         await model_loader.load_all_models()
     else:
         logger.info("🌐 API server mode - models handled by Celery workers")
@@ -135,7 +149,7 @@ async def app_info():
 
 if __name__ == "__main__":
     # Use different ports for API vs Worker
-    port = 8000 if not settings.enable_model_loading else 8123
+    port = 8123 if not settings.enable_model_loading else 8123
     
     uvicorn.run(
         "app.main:app",
