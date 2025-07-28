@@ -2,7 +2,6 @@ from pydantic_settings import BaseSettings
 from typing import Optional
 import os
 from pathlib import Path
-
 import redis
 
 class Settings(BaseSettings):
@@ -21,8 +20,7 @@ class Settings(BaseSettings):
     # Model Configuration
     model_cache_size: int = 8192
     cleanup_interval: int = 3600
-    enable_model_loading: bool = False
-    worker_mode: bool = False
+    enable_model_loading: bool = True
     
     # Security
     site_id: str = "unknown-site"
@@ -33,63 +31,66 @@ class Settings(BaseSettings):
     alert_queue_size: int = 15
     alert_memory_usage: int = 90
     
-    # Paths - Auto-detect environment
-    models_path: str = "/app/models"
-    logs_path: str = "/app/logs"
-    temp_path: str = "/app/temp"
+    # Paths - Use environment variables with sensible defaults
+    models_path: str = "./models"
+    logs_path: str = "./logs"
+    temp_path: str = "./temp"
     
-    # Redis Configuration - Updated for Docker
+    # Redis Configuration
     redis_url: str = "redis://localhost:6379/0"
     redis_task_db: int = 1
     
     # Docker detection
     docker_container: bool = False
     
-    def __post_init__(self):
-        """Auto-detect if running in container or locally"""
-        # Detect if running in Docker container
-        if (os.path.exists("/.dockerenv") or 
-            os.environ.get("DOCKER_CONTAINER") or 
-            self.docker_container):
-            # Running in container - use container paths
-            self.models_path = "/app/models"
-            # Update Redis URL for Docker network if not explicitly set
-            if self.redis_url == "redis://localhost:6379/0":
-                self.redis_url = "redis://redis:6379/0"  # Use Docker service name
-        else:
-            # Running locally - use relative paths
-            project_root = Path(__file__).parent.parent.parent
-            self.models_path = str(project_root / "models")
-            self.logs_path = str(project_root / "logs")
-            self.temp_path = str(project_root / "temp")
+    def get_model_path(self, model_name: str) -> str:
+        """Get absolute path for a model"""
+        return os.path.join(self.models_path, model_name)
+    
+    def initialize_paths(self):
+        """Initialize paths - called explicitly, not at import time"""
+        # Convert to absolute paths
+        self.models_path = os.path.abspath(self.models_path)
+        self.logs_path = os.path.abspath(self.logs_path)
+        self.temp_path = os.path.abspath(self.temp_path)
         
         # Create directories if they don't exist
         os.makedirs(self.models_path, exist_ok=True)
         os.makedirs(self.logs_path, exist_ok=True)
         os.makedirs(self.temp_path, exist_ok=True)
-    
-    def get_model_path(self, model_name: str) -> str:
-        """Get absolute path for a model"""
-        return os.path.join(self.models_path, model_name)
+        
+        # Debug output
+        print(f"📁 Models path: {self.models_path}")
+        print(f"📁 Models exists: {os.path.exists(self.models_path)}")
+        
+        return self.models_path
     
     class Config:
         env_file = ".env"
         case_sensitive = False
 
-# Initialize settings and auto-detect paths
+# Initialize settings (but don't call path initialization at import time)
 settings = Settings()
-settings.__post_init__()
 
-# Redis clients with error handling
-try:
-    redis_client = redis.from_url(settings.redis_url)
-    redis_task_client = redis.from_url(f"redis://{'redis' if settings.docker_container else 'localhost'}:6379/{settings.redis_task_db}")
+# Redis clients with error handling - but don't connect at import time
+redis_client = None
+redis_task_client = None
+
+def initialize_redis():
+    """Initialize Redis connections - called explicitly when needed"""
+    global redis_client, redis_task_client
     
-    # Test connection
-    redis_client.ping()
-    print(f"✅ Redis connected: {settings.redis_url}")
-    
-except Exception as e:
-    print(f"⚠️ Redis connection failed: {e}")
-    redis_client = None
-    redis_task_client = None
+    try:
+        redis_client = redis.from_url(settings.redis_url)
+        redis_task_client = redis.from_url(f"{settings.redis_url.rsplit('/', 1)[0]}/{settings.redis_task_db}")
+        
+        # Test connection
+        redis_client.ping()
+        print(f"✅ Redis connected: {settings.redis_url}")
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ Redis connection failed: {e}")
+        redis_client = None
+        redis_task_client = None
+        return False
