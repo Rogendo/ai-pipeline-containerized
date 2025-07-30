@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     redis_task_db: int = 1
     
+    enable_streaming: bool = False
+    max_streaming_slots: int = 2
+    max_batch_slots: int = 1  
+    streaming_port: int = 8300
+    streaming_host: str = "0.0.0.0"
+    
     # Docker detection
     docker_container: bool = False
     

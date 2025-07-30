@@ -1,3 +1,4 @@
+import argparse
 import logging
 import asyncio
 import os
@@ -10,6 +11,8 @@ from .config.settings import settings
 from .api import health_routes, queue_routes, ner_routes, translator_routes, summarizer_routes, classifier_route, whisper_routes, audio_routes
 from .models.model_loader import model_loader
 from .core.resource_manager import resource_manager
+
+from .config.settings import settings
 
 # Only import Celery if we're not the main API server
 if settings.enable_model_loading:
@@ -141,14 +144,40 @@ async def app_info():
         "system": system_info,
         "gpu": gpu_info
     }
+    
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='AI Pipeline Server')
+    parser.add_argument('--enable-streaming', action='store_true', 
+                       help='Enable streaming server on port 8300')
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    # Use different ports for API vs Worker
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Override settings based on command line args
+    if args.enable_streaming:
+        settings.enable_streaming = True
+        logger.info("🎙️ Streaming mode enabled via command line")
+    
+    # Log the configuration
+    logger.info(f"Configuration - Streaming: {getattr(settings, 'enable_streaming', False)}")
+    
+    # Use different ports for API vs Worker  
     port = 8123 if not settings.enable_model_loading else 8123
+    
+    # If streaming is enabled, we need to start both FastAPI and streaming server
+    if getattr(settings, 'enable_streaming', False):
+        logger.info("🎙️ Starting with streaming support - FastAPI on 8123, Streaming on 8300")
+        # For now, just start FastAPI - we'll add streaming server in Task 1.3
+        # TODO: Add streaming server startup here in Task 1.3
+    else:
+        logger.info("📦 Starting FastAPI only on port 8123")
     
     uvicorn.run(
         "app.main:app",
-        host="0.0.0.0",
+        host="0.0.0.0", 
         port=port,
         reload=settings.debug,
         log_level=settings.log_level.lower()
