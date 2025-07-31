@@ -11,6 +11,7 @@ from .config.settings import settings
 from .api import health_routes, queue_routes, ner_routes, translator_routes, summarizer_routes, classifier_route, whisper_routes, audio_routes
 from .models.model_loader import model_loader
 from .core.resource_manager import resource_manager
+from .streaming.tcp_server import AsteriskTCPServer
 
 from .config.settings import settings
 
@@ -29,6 +30,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
+    global asterisk_server
+    
     logger.info(f"Starting {settings.app_name} v{settings.app_version}")
     
     # Initialize paths
@@ -52,12 +55,35 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("🌐 API server mode - models handled by Celery workers")
     
+    # 🆕 Start Asterisk TCP server if enabled
+    if os.getenv("ENABLE_ASTERISK_TCP", "true").lower() == "true":
+        try:
+            logger.info("🎙️ Starting Asterisk TCP listener...")
+            asterisk_server = AsteriskTCPServer()  # Remove model_loader parameter
+            
+            # Start TCP listener in background
+            asyncio.create_task(asterisk_server.start_server())
+            logger.info("🎙️ Asterisk TCP listener started on port 8300 - waiting for connections")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to start Asterisk TCP listener: {e}")
+    else:
+        logger.info("🔇 Asterisk TCP listener disabled")
+    
     logger.info("Application startup complete")
     
-    yield
+    yield  # Application runs here
     
+    # SHUTDOWN
     logger.info("Application shutdown")
-
+    
+    # 🆕 Stop Asterisk TCP server
+    if asterisk_server:
+        try:
+            await asterisk_server.stop_server()
+            logger.info("🔌 Asterisk TCP listener stopped")
+        except Exception as e:
+            logger.error(f"❌ Error stopping Asterisk TCP listener: {e}")
 # Create FastAPI app
 app = FastAPI(
     title=settings.app_name,
@@ -86,6 +112,14 @@ app.include_router(classifier_route.router)
 app.include_router(whisper_routes.router)
 app.include_router(audio_routes.router)
 
+@app.get("/asterisk/status")
+async def asterisk_status():
+    """Get Asterisk TCP listener status"""
+    if asterisk_server:
+        return asterisk_server.get_status()
+    return {"error": "Asterisk TCP listener not running"}
+
+
 @app.get("/")
 async def root():
     """Root endpoint"""
@@ -104,7 +138,8 @@ async def root():
             "whisper": "/whisper/transcribe",
             "complete_audio_pipeline": "/audio/process",
             "quick_audio_analysis": "/audio/analyze",
-            "celery_status": "/health/celery/status"
+            "celery_status": "/health/celery/status",
+            "asterisk_status": "/asterisk/status"
         }
     }
 

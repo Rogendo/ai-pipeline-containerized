@@ -4,6 +4,7 @@ import os
 import socket
 from celery import current_task
 from celery.signals import worker_init
+import numpy as np
 from ..celery_app import celery_app
 import logging
 import asyncio
@@ -766,3 +767,61 @@ def _generate_insights(transcript: str, translation: Optional[str],
             "key_dates": dates[:3]
         }
     }
+    
+# Add to app/tasks/audio_tasks.py
+
+@celery_app.task(bind=True, name="process_streaming_audio_task")
+def process_streaming_audio_task(
+    self,
+    audio_bytes: bytes,
+    filename: str,
+    connection_id: str,
+    language: str = "sw",
+    sample_rate: int = 16000,
+    duration_seconds: float = 5.0,
+    is_streaming: bool = True
+):
+    """
+    Process real-time streaming audio chunks from Asterisk
+    Quick transcription only for low latency
+    """
+    
+    try:
+        # Get worker models (your existing function)
+        models = get_worker_models()
+        if not models:
+            raise RuntimeError("Models not loaded in worker")
+        
+        start_time = datetime.now()
+        
+        # Quick transcription only (no full pipeline for speed)
+        if models.whisper_model:
+            # Convert bytes back to numpy array
+            audio_array = np.frombuffer(audio_bytes, np.int16).astype(np.float32) / 32768.0
+            
+            # Transcribe
+            result = models.whisper_model.transcribe(
+                audio_array,
+                language=language
+            )
+            
+            duration = (datetime.now() - start_time).total_seconds()
+            transcript = result.get("text", "").strip()
+            
+            # Log like original aii_server.py
+            logger.info(f"🎵 {duration:<6.2f}s | {duration_seconds:<3.0f}s | {connection_id} | {transcript}")
+            
+            return {
+                "connection_id": connection_id,
+                "transcript": transcript,
+                "duration": duration,
+                "audio_duration": duration_seconds,
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            logger.warning(f"⚠️ Whisper model not available in worker")
+            return {"error": "Whisper model not loaded"}
+        
+    except Exception as e:
+        logger.error(f"❌ Streaming transcription failed: {e}")
+        raise
