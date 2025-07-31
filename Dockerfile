@@ -6,6 +6,10 @@ WORKDIR /app
 # Install system dependencies (including curl for health checks)
 RUN apt-get update && apt-get install -y \
     curl \
+    build-essential \
+    gcc \
+    portaudio19-dev \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

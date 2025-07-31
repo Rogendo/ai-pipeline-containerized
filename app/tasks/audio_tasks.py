@@ -298,26 +298,99 @@ def _process_audio_sync_worker(
     include_insights: bool
 ) -> Dict[str, Any]:
     """
-    Synchronous audio processing using worker models
+    Synchronous audio processing using worker models with Redis streaming
     """
     start_time = datetime.now()
     processing_steps = {}
+    task_id = task_instance.request.id
+    
+    # Initialize streaming (sync wrapper for async streaming service)
+    import asyncio
+    
+    def publish_update(step, progress, message=None, partial_result=None, metadata=None):
+        """Sync wrapper to publish streaming updates"""
+        try:
+            # Use synchronous Redis client for Celery worker compatibility
+            import redis
+            import json
+            from datetime import datetime
+            from ..config.settings import get_redis_url
+            
+            # Create synchronous Redis client
+            redis_client = redis.from_url(get_redis_url(), decode_responses=True)
+            
+            # Build update message
+            update = {
+                "task_id": task_id,
+                "step": step,
+                "progress": progress,
+                "timestamp": datetime.now().isoformat(),
+                "message": message or f"Processing: {step}"
+            }
+            
+            if partial_result:
+                update["partial_result"] = partial_result
+            
+            if metadata:
+                update["metadata"] = metadata
+            
+            # Publish to Redis channel
+            channel = f"audio_stream:{task_id}"
+            subscribers = redis_client.publish(channel, json.dumps(update))
+            
+            if subscribers > 0:
+                logger.debug(f"📡 Published {step} update for task {task_id} to {subscribers} subscribers")
+            
+            redis_client.close()
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to publish update for {step}: {e}")
+    
+    # Publish initial start
+    publish_update("started", 5, f"Starting audio processing for {filename}")
     
     # Step 1: Transcription
     task_instance.update_state(
         state="PROCESSING",
         meta={"step": "transcription", "progress": 10}
     )
+    publish_update("transcription", 10, "Starting audio transcription...")
     
     step_start = datetime.now()
     whisper_model = models.models.get("whisper")
     if not whisper_model:
+        publish_update("transcription_error", 10, "Whisper model not available")
         raise RuntimeError("Whisper model not available in worker")
-        
-    transcript = whisper_model.transcribe_audio_bytes(audio_bytes, language=language)
+    
+    # Check if model supports streaming transcription
+    if hasattr(whisper_model, 'transcribe_streaming'):
+        # Stream partial transcription results
+        transcript = ""
+        for partial_transcript, progress_pct in whisper_model.transcribe_streaming(audio_bytes, language=language):
+            transcript = partial_transcript
+            stream_progress = 10 + int(progress_pct * 0.2)  # 10-30% range
+            publish_update(
+                "transcription", 
+                stream_progress, 
+                f"Transcribing... ({progress_pct:.1f}%)",
+                partial_result={"transcript": transcript, "is_final": False}
+            )
+    else:
+        # Fallback to regular transcription
+        transcript = whisper_model.transcribe_audio_bytes(audio_bytes, language=language)
+    
+    # Publish final transcription
+    transcription_duration = (datetime.now() - step_start).total_seconds()
+    publish_update(
+        "transcription_complete", 
+        30, 
+        "Transcription completed",
+        partial_result={"transcript": transcript, "is_final": True},
+        metadata={"duration": transcription_duration}
+    )
     
     processing_steps["transcription"] = {
-        "duration": (datetime.now() - step_start).total_seconds(),
+        "duration": transcription_duration,
         "status": "completed",
         "output_length": len(transcript)
     }
@@ -327,25 +400,54 @@ def _process_audio_sync_worker(
     if include_translation:
         task_instance.update_state(
             state="PROCESSING",
-            meta={"step": "translation", "progress": 30}
+            meta={"step": "translation", "progress": 35}
         )
+        publish_update("translation", 35, "Starting translation...")
         
         step_start = datetime.now()
         try:
             translator_model = models.models.get("translator")
-            if translator_model:
-                translation = translator_model.translate(transcript)
-                
-                processing_steps["translation"] = {
-                    "duration": (datetime.now() - step_start).total_seconds(),
-                    "status": "completed",
-                    "output_length": len(translation)
-                }
-            else:
+            if not translator_model:
+                publish_update("translation_error", 35, "Translator model not available")
                 raise RuntimeError("Translator model not available")
-        except Exception as e:
+            
+            # Check if model supports streaming translation
+            if hasattr(translator_model, 'translate_streaming'):
+                # Stream partial translation results
+                translation = ""
+                for partial_translation, progress_pct in translator_model.translate_streaming(transcript):
+                    translation = partial_translation
+                    stream_progress = 35 + int(progress_pct * 0.15)  # 35-50% range
+                    publish_update(
+                        "translation", 
+                        stream_progress, 
+                        f"Translating... ({progress_pct:.1f}%)",
+                        partial_result={"translation": translation, "is_final": False}
+                    )
+            else:
+                # Fallback to regular translation
+                translation = translator_model.translate(transcript)
+            
+            # Publish final translation
+            translation_duration = (datetime.now() - step_start).total_seconds()
+            publish_update(
+                "translation_complete", 
+                50, 
+                "Translation completed",
+                partial_result={"translation": translation, "is_final": True},
+                metadata={"duration": translation_duration}
+            )
+            
             processing_steps["translation"] = {
-                "duration": (datetime.now() - step_start).total_seconds(),
+                "duration": translation_duration,
+                "status": "completed",
+                "output_length": len(translation)
+            }
+        except Exception as e:
+            translation_duration = (datetime.now() - step_start).total_seconds()
+            publish_update("translation_error", 35, f"Translation failed: {str(e)}")
+            processing_steps["translation"] = {
+                "duration": translation_duration,
                 "status": "failed",
                 "error": str(e)
             }
@@ -354,28 +456,43 @@ def _process_audio_sync_worker(
     # Step 3: NLP Processing
     task_instance.update_state(
         state="PROCESSING",
-        meta={"step": "nlp_analysis", "progress": 50}
+        meta={"step": "nlp_analysis", "progress": 55}
     )
+    publish_update("nlp_analysis", 55, "Starting NLP analysis...")
     
     nlp_text = translation if translation else transcript
     nlp_source = "translated_text" if translation else "original_transcript"
     
     # NER
+    publish_update("ner", 60, "Extracting named entities...")
     step_start = datetime.now()
     try:
         ner_model = models.models.get("ner")
         if not ner_model:
+            publish_update("ner_error", 60, "NER model not available")
             raise RuntimeError("NER model not available")
         entities = ner_model.extract_entities(nlp_text, flat=False)
+        
+        ner_duration = (datetime.now() - step_start).total_seconds()
+        publish_update(
+            "ner_complete", 
+            65, 
+            f"Named entity extraction completed - found {len(entities)} entity types",
+            partial_result={"entities": entities},
+            metadata={"duration": ner_duration}
+        )
+        
         ner_status = {
             "result": entities,
-            "duration": (datetime.now() - step_start).total_seconds(),
+            "duration": ner_duration,
             "status": "completed"
         }
     except Exception as e:
+        ner_duration = (datetime.now() - step_start).total_seconds()
+        publish_update("ner_error", 60, f"NER failed: {str(e)}")
         ner_status = {
             "result": {},
-            "duration": (datetime.now() - step_start).total_seconds(),
+            "duration": ner_duration,
             "status": "failed",
             "error": str(e)
         }
@@ -385,22 +502,36 @@ def _process_audio_sync_worker(
         state="PROCESSING",
         meta={"step": "classification", "progress": 70}
     )
+    publish_update("classification", 70, "Classifying content...")
     
     step_start = datetime.now()
     try:
         classifier_model = models.models.get("classifier_model")
         if not classifier_model:
+            publish_update("classification_error", 70, "Classifier model not available")
             raise RuntimeError("Classifier model not available")
         classification = classifier_model.classify(nlp_text)
+        
+        classification_duration = (datetime.now() - step_start).total_seconds()
+        publish_update(
+            "classification_complete", 
+            75, 
+            f"Classification completed - category: {classification.get('main_category', 'unknown')}",
+            partial_result={"classification": classification},
+            metadata={"duration": classification_duration}
+        )
+        
         classifier_status = {
             "result": classification,
-            "duration": (datetime.now() - step_start).total_seconds(),
+            "duration": classification_duration,
             "status": "completed"
         }
     except Exception as e:
+        classification_duration = (datetime.now() - step_start).total_seconds()
+        publish_update("classification_error", 70, f"Classification failed: {str(e)}")
         classifier_status = {
             "result": {},
-            "duration": (datetime.now() - step_start).total_seconds(),
+            "duration": classification_duration,
             "status": "failed",
             "error": str(e)
         }
@@ -408,24 +539,38 @@ def _process_audio_sync_worker(
     # Summarization
     task_instance.update_state(
         state="PROCESSING",
-        meta={"step": "summarization", "progress": 85}
+        meta={"step": "summarization", "progress": 80}
     )
+    publish_update("summarization", 80, "Generating summary...")
     
     step_start = datetime.now()
     try:
         summarizer_model = models.models.get("summarizer")
         if not summarizer_model:
+            publish_update("summarization_error", 80, "Summarizer model not available")
             raise RuntimeError("Summarizer model not available")
         summary = summarizer_model.summarize(nlp_text)
+        
+        summarization_duration = (datetime.now() - step_start).total_seconds()
+        publish_update(
+            "summarization_complete", 
+            85, 
+            f"Summary generated ({len(summary)} characters)",
+            partial_result={"summary": summary},
+            metadata={"duration": summarization_duration}
+        )
+        
         summary_status = {
             "result": summary,
-            "duration": (datetime.now() - step_start).total_seconds(),
+            "duration": summarization_duration,
             "status": "completed"
         }
     except Exception as e:
+        summarization_duration = (datetime.now() - step_start).total_seconds()
+        publish_update("summarization_error", 80, f"Summarization failed: {str(e)}")
         summary_status = {
             "result": "",
-            "duration": (datetime.now() - step_start).total_seconds(),
+            "duration": summarization_duration,
             "status": "failed",
             "error": str(e)
         }
@@ -435,8 +580,9 @@ def _process_audio_sync_worker(
     if include_insights:
         task_instance.update_state(
             state="PROCESSING",
-            meta={"step": "insights", "progress": 95}
+            meta={"step": "insights", "progress": 90}
         )
+        publish_update("insights", 90, "Generating insights...")
         
         # Generate insights (simplified version)
         entities = ner_status["result"]
@@ -444,6 +590,13 @@ def _process_audio_sync_worker(
         summary = summary_status["result"]
         
         insights = _generate_insights(transcript, translation, entities, classification, summary)
+        
+        publish_update(
+            "insights_complete", 
+            95, 
+            "Insights generated successfully",
+            partial_result={"insights": insights}
+        )
     
     # Final result
     total_processing_time = (datetime.now() - start_time).total_seconds()
@@ -492,6 +645,15 @@ def _process_audio_sync_worker(
             "processed_by": "celery_worker"
         }
     }
+    
+    # Publish final result
+    publish_update(
+        "completed", 
+        100, 
+        f"Audio processing completed in {total_processing_time:.2f}s",
+        partial_result=result,
+        metadata={"total_duration": total_processing_time}
+    )
     
     return result
 
