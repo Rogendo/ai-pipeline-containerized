@@ -3,6 +3,7 @@ import logging
 import librosa
 import tempfile
 import os
+import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -298,6 +299,62 @@ class WhisperModel:
                     os.unlink(temp_file.name)
                 except:
                     pass
+    
+    def transcribe_pcm_audio(self, audio_bytes: bytes, sample_rate: int = 16000, language: Optional[str] = None) -> str:
+        """Transcribe raw PCM audio bytes (for streaming from TCP)"""
+        if not self.is_loaded:
+            raise RuntimeError("Whisper model not loaded")
+        
+        try:
+            logger.info(f"🎙️ Transcribing PCM audio: {len(audio_bytes)} bytes at {sample_rate}Hz")
+            
+            # Validate and normalize language
+            validated_language = self._validate_language(language)
+            if validated_language:
+                logger.info(f"🎙️ Target language: {validated_language} ({self.supported_languages.get(validated_language, 'Unknown')})")
+            else:
+                logger.info("🎙️ Language: Auto-detect")
+            
+            # Convert raw PCM bytes to numpy array (assuming 16-bit signed integers)
+            audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            
+            # Calculate audio duration
+            duration = len(audio_array) / sample_rate
+            logger.info(f"🎙️ Audio duration: {duration:.1f} seconds")
+            
+            # Prepare pipeline kwargs - EXPLICITLY set task to transcribe
+            generate_kwargs = {
+                "task": "transcribe"  # Explicitly set to transcribe (not translate)
+            }
+            
+            # Add language if specified
+            if validated_language:
+                generate_kwargs["language"] = validated_language
+            
+            # Use standard transcription for streaming chunks (should be ≤5 seconds)
+            logger.info("🎙️ Processing PCM audio chunk")
+            result = self.pipe(
+                audio_array,
+                generate_kwargs=generate_kwargs,
+                return_timestamps=False
+            )
+            
+            # Extract text from result
+            if isinstance(result, dict):
+                transcript = result["text"].strip()
+            elif isinstance(result, list):
+                # For chunked results, concatenate all text
+                transcript = " ".join([chunk["text"] for chunk in result]).strip()
+            else:
+                transcript = str(result).strip()
+            
+            logger.info(f"✅ PCM transcription completed: {len(transcript)} characters")
+            
+            return transcript
+            
+        except Exception as e:
+            logger.error(f"❌ PCM transcription failed: {e}")
+            raise RuntimeError(f"PCM transcription failed: {str(e)}")
     
     def get_supported_languages(self) -> Dict[str, str]:
         """Get dictionary of supported language codes and names"""

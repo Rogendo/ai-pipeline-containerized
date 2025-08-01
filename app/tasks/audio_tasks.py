@@ -795,18 +795,16 @@ def process_streaming_audio_task(
         start_time = datetime.now()
         
         # Quick transcription only (no full pipeline for speed)
-        if models.whisper_model:
-            # Convert bytes back to numpy array
-            audio_array = np.frombuffer(audio_bytes, np.int16).astype(np.float32) / 32768.0
-            
-            # Transcribe
-            result = models.whisper_model.transcribe(
-                audio_array,
+        whisper_model = models.models.get("whisper")
+        if whisper_model: 
+            # Use the PCM transcription method for raw audio bytes
+            transcript = whisper_model.transcribe_pcm_audio(
+                audio_bytes,
+                sample_rate=sample_rate,
                 language=language
             )
             
             duration = (datetime.now() - start_time).total_seconds()
-            transcript = result.get("text", "").strip()
             
             # Log like original aii_server.py
             logger.info(f"🎵 {duration:<6.2f}s | {duration_seconds:<3.0f}s | {connection_id} | {transcript}")
