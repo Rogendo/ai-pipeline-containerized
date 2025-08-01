@@ -3,7 +3,7 @@ import logging
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
@@ -12,6 +12,7 @@ from .api import health_routes, queue_routes, ner_routes, translator_routes, sum
 from .models.model_loader import model_loader
 from .core.resource_manager import resource_manager
 from .streaming.tcp_server import AsteriskTCPServer
+from .streaming.websocket_server import websocket_manager
 
 from .config.settings import settings
 
@@ -112,12 +113,21 @@ app.include_router(classifier_route.router)
 app.include_router(whisper_routes.router)
 app.include_router(audio_routes.router)
 
+@app.websocket("/audio/stream")
+async def websocket_audio_stream(websocket: WebSocket):
+    """WebSocket endpoint for Asterisk audio streaming"""
+    await websocket_manager.handle_websocket(websocket)
+
 @app.get("/asterisk/status")
 async def asterisk_status():
-    """Get Asterisk TCP listener status"""
-    if asterisk_server:
-        return asterisk_server.get_status()
-    return {"error": "Asterisk TCP listener not running"}
+    """Get Asterisk TCP and WebSocket listener status"""
+    tcp_status = asterisk_server.get_status() if asterisk_server else {"error": "TCP listener not running"}
+    ws_status = websocket_manager.get_status()
+    
+    return {
+        "tcp_server": tcp_status,
+        "websocket_server": ws_status
+    }
 
 
 @app.get("/")
@@ -139,7 +149,8 @@ async def root():
             "complete_audio_pipeline": "/audio/process",
             "quick_audio_analysis": "/audio/analyze",
             "celery_status": "/health/celery/status",
-            "asterisk_status": "/asterisk/status"
+            "asterisk_status": "/asterisk/status",
+            "websocket_audio_stream": "ws://localhost:8123/audio/stream"
         }
     }
 
