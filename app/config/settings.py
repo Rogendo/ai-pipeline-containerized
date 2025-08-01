@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     whisper_streaming_model: str = "base"
     whisper_batch_model: str = "large-v3"
     
+    # Agent Notification Configuration
+    asterisk_server_ip: str = "192.168.8.13"
+    
     # Docker detection
     docker_container: bool = False
     

@@ -60,7 +60,6 @@ class WhisperModel:
             return False
         
         # Check for essential Whisper model files
-        required_files = ["config.json"]
         optional_files = ["model.safetensors", "pytorch_model.bin"]
         
         # At least config.json must exist
@@ -331,13 +330,23 @@ class WhisperModel:
             if validated_language:
                 generate_kwargs["language"] = validated_language
             
-            # Use standard transcription for streaming chunks (should be ≤5 seconds)
-            logger.info("🎙️ Processing PCM audio chunk")
-            result = self.pipe(
-                audio_array,
-                generate_kwargs=generate_kwargs,
-                return_timestamps=False
-            )
+            # Handle long audio (>30s) with timestamps, short audio normally
+            if duration > 30:
+                logger.info("🎙️ Processing long PCM audio chunk (>30s) with timestamps")
+                result = self.pipe(
+                    audio_array,
+                    generate_kwargs=generate_kwargs,
+                    return_timestamps=True,
+                    chunk_length_s=30,
+                    stride_length_s=5
+                )
+            else:
+                logger.info("🎙️ Processing PCM audio chunk (≤30s)")
+                result = self.pipe(
+                    audio_array,
+                    generate_kwargs=generate_kwargs,
+                    return_timestamps=False
+                )
             
             # Extract text from result
             if isinstance(result, dict):

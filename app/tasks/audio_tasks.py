@@ -775,15 +775,15 @@ def process_streaming_audio_task(
     self,
     audio_bytes: bytes,
     filename: str,
-    connection_id: str,
+    connection_id: str,  # Now call_id from Asterisk
     language: str = "sw",
     sample_rate: int = 16000,
     duration_seconds: float = 5.0,
     is_streaming: bool = True
 ):
     """
-    Process real-time streaming audio chunks from Asterisk
-    Quick transcription only for low latency
+    Process real-time streaming audio chunks from Asterisk with call session tracking
+    Quick transcription only for low latency, adds to cumulative transcript
     """
     
     try:
@@ -793,6 +793,7 @@ def process_streaming_audio_task(
             raise RuntimeError("Models not loaded in worker")
         
         start_time = datetime.now()
+        call_id = connection_id  # connection_id is now actually call_id
         
         # Quick transcription only (no full pipeline for speed)
         whisper_model = models.models.get("whisper")
@@ -804,17 +805,62 @@ def process_streaming_audio_task(
                 language=language
             )
             
-            duration = (datetime.now() - start_time).total_seconds()
+            processing_duration = (datetime.now() - start_time).total_seconds()
             
-            # Log like original aii_server.py
-            logger.info(f"🎵 {duration:<6.2f}s | {duration_seconds:<3.0f}s | {connection_id} | {transcript}")
+            # Add transcription to call session (async operation in sync context)
+            try:
+                import asyncio
+                
+                # Get or create event loop
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                
+                # Import session manager and add transcription
+                from ..streaming.call_session_manager import call_session_manager
+                
+                # Add to call session with metadata
+                metadata = {
+                    'task_id': self.request.id,
+                    'processing_duration': processing_duration,
+                    'filename': filename,
+                    'sample_rate': sample_rate
+                }
+                
+                # Run async operation in sync context
+                updated_session = loop.run_until_complete(
+                    call_session_manager.add_transcription(
+                        call_id, 
+                        transcript, 
+                        duration_seconds, 
+                        metadata
+                    )
+                )
+                
+                # Enhanced logging with session info
+                if updated_session:
+                    logger.info(f"🎵 {processing_duration:<6.2f}s | {duration_seconds:<3.0f}s | {call_id} | "
+                               f"Segment {updated_session.segment_count} | {transcript}")
+                    logger.info(f"📊 Call {call_id}: {updated_session.total_audio_duration:.1f}s total, "
+                               f"{len(updated_session.cumulative_transcript)} chars")
+                else:
+                    logger.warning(f"⚠️ Could not add to session {call_id}, logging standalone")
+                    logger.info(f"🎵 {processing_duration:<6.2f}s | {duration_seconds:<3.0f}s | {call_id} | {transcript}")
+                
+            except Exception as session_error:
+                logger.error(f"❌ Session update failed for {call_id}: {session_error}")
+                # Fallback logging
+                logger.info(f"🎵 {processing_duration:<6.2f}s | {duration_seconds:<3.0f}s | {call_id} | {transcript}")
             
             return {
-                "connection_id": connection_id,
+                "call_id": call_id,
                 "transcript": transcript,
-                "duration": duration,
+                "processing_duration": processing_duration,
                 "audio_duration": duration_seconds,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "session_updated": True
             }
         else:
             logger.warning(f"⚠️ Whisper model not available in worker")

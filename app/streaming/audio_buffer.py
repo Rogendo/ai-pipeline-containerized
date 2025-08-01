@@ -25,25 +25,24 @@ class AsteriskAudioBuffer:
         
         # Check if we have 5 seconds of audio (exactly like original aii_server.py)
         if (current_size - self.offset) >= self.window_size_bytes:
-            # Handle excess bytes (from original logic)
-            excess_bytes = (current_size - self.offset) - self.window_size_bytes
-            if excess_bytes > 0:
-                excess_data = self.buffer[-excess_bytes:]
-                self.buffer = self.buffer[:-excess_bytes]
+            # Extract exactly 5 seconds from the current offset
+            window_start = self.offset
+            window_end = self.offset + self.window_size_bytes
+            window_data = self.buffer[window_start:window_end]
             
             # Convert to numpy array (your specified format)
-            audio_array = np.frombuffer(self.buffer, np.int16).flatten().astype(np.float32) / 32768.0
+            audio_array = np.frombuffer(window_data, np.int16).flatten().astype(np.float32) / 32768.0
             
-            # Sliding window (from original)
+            # Sliding window - move offset forward by 5 seconds
             self.offset += self.window_size_bytes
+            
+            # Reset buffer when it gets too large (keep only recent data)
             if current_size >= self.window_size_bytes * 10:  # Reset after 50 seconds
-                self.buffer.clear()
+                # Keep only the most recent 5 seconds of data  
+                recent_data = self.buffer[self.offset:]
+                self.buffer = bytearray(recent_data)
                 self.offset = 0
                 logger.info(f"🔄 Buffer reset after 50 seconds")
-                
-            # Re-add excess bytes
-            if excess_bytes > 0:
-                self.buffer.extend(excess_data)
                 
             logger.debug(f"🎵 Audio window ready: {len(audio_array)} samples ({len(audio_array)/16000:.1f}s)")
             return audio_array
