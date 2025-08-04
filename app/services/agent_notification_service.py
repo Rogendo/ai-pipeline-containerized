@@ -149,6 +149,10 @@ class AgentNotificationService:
     def _create_base64_message(self, payload: Dict[str, Any]) -> str:
         """Create base64 encoded message from payload"""
         json_message = json.dumps(payload, ensure_ascii=False)
+        
+        # Log the JSON payload before encoding
+        logger.info(f"📋 [agent] JSON payload to be sent: {json_message}")
+        
         encoded_bytes = base64.b64encode(json_message.encode('utf-8'))
         return encoded_bytes.decode('utf-8')
     
@@ -197,9 +201,9 @@ class AgentNotificationService:
                 headers=headers
             ) as response:
                 
-                if response.status == 200:
+                if 200 <= response.status < 300:  # Accept all 2xx success codes
                     logger.info(f"📤 [agent] Sent {update_type.value} update for call {call_id} "
-                               f"(message_id: {message_id})")
+                               f"(message_id: {message_id}) - HTTP {response.status}")
                     return True
                 else:
                     error_text = await response.text()

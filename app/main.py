@@ -38,6 +38,18 @@ async def lifespan(app: FastAPI):
     # Initialize paths
     settings.initialize_paths()
     
+    # Initialize Redis connections (needed for both API server and worker modes)
+    logger.info("📡 Initializing Redis connections...")
+    try:
+        from .config.settings import initialize_redis
+        redis_success = initialize_redis()
+        if redis_success:
+            logger.info("✅ Redis connections initialized")
+        else:
+            logger.warning("⚠️ Redis initialization failed")
+    except Exception as e:
+        logger.error(f"❌ Redis initialization error: {e}")
+    
     # API server doesn't need Celery monitoring or model loading
     if settings.enable_model_loading:
         logger.info("🔄 Worker mode - loading models and starting Celery monitoring...")

@@ -56,7 +56,7 @@ async def run_integration_tests():
     # Check FastAPI
     try:
         response = requests.get("http://localhost:8123/health", timeout=5)
-        if response.status_code == 200:
+        if 200 <= response.status_code < 300:
             print("✅ FastAPI server is running")
         else:
             print("⚠️ FastAPI server responded but may have issues")
@@ -95,7 +95,7 @@ async def run_integration_tests():
     # Check Celery workers
     try:
         response = requests.get("http://localhost:8123/health/celery/status", timeout=5)
-        if response.status_code == 200:
+        if 200 <= response.status_code < 300:
             data = response.json()
             if data.get("workers_online", 0) > 0:
                 print("✅ Celery workers are running")
@@ -191,7 +191,7 @@ def main():
             try:
                 if protocol == "HTTP":
                     response = requests.get(addr, timeout=3)
-                    status = "✅ Running" if response.status_code == 200 else "⚠️ Issues"
+                    status = "✅ Running" if 200 <= response.status_code < 300 else "⚠️ Issues"
                 else:
                     host, port = addr.split(':')
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

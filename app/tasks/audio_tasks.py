@@ -821,6 +821,15 @@ def process_streaming_audio_task(
                 # Import session manager and add transcription
                 from ..streaming.call_session_manager import call_session_manager
                 
+                # Debug: Check Redis client availability
+                logger.info(f"🔍 [debug] Celery worker Redis client available: {call_session_manager.redis_client is not None}")
+                if call_session_manager.redis_client:
+                    try:
+                        call_session_manager.redis_client.ping()
+                        logger.info(f"🔍 [debug] Redis ping successful")
+                    except Exception as e:
+                        logger.error(f"🔍 [debug] Redis ping failed: {e}")
+                
                 # Add to call session with metadata
                 metadata = {
                     'task_id': self.request.id,

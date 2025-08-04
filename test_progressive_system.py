@@ -33,7 +33,7 @@ class ProgressiveSystemTester:
         
         try:
             response = requests.get(f"{self.base_url}/api/v1/calls/agent-service/health")
-            if response.status_code == 200:
+            if 200 <= response.status_code < 300:
                 data = response.json()
                 self.log(f"✅ Agent service health: {data['status']}")
                 if data.get('token_status', {}).get('has_token'):
@@ -52,7 +52,7 @@ class ProgressiveSystemTester:
         
         try:
             response = requests.post(f"{self.base_url}/api/v1/calls/agent-service/test-auth")
-            if response.status_code == 200:
+            if 200 <= response.status_code < 300:
                 data = response.json()
                 success = data.get('success', False)
                 self.log(f"{'✅' if success else '❌'} Auth token fetch: {data.get('message')}")
@@ -75,7 +75,7 @@ class ProgressiveSystemTester:
                 f"{self.base_url}/api/v1/calls/agent-service/test-notification",
                 params={"call_id": self.test_call_id}
             )
-            if response.status_code == 200:
+            if 200 <= response.status_code < 300:
                 data = response.json()
                 success = data.get('success', False)
                 self.log(f"{'✅' if success else '❌'} Notification send: {data.get('message')}")
@@ -105,7 +105,7 @@ class ProgressiveSystemTester:
         try:
             # Test getting call stats before starting
             response = requests.get(f"{self.base_url}/api/v1/calls/stats")
-            if response.status_code == 200:
+            if 200 <= response.status_code < 300:
                 stats = response.json()
                 self.log(f"📊 Initial active calls: {stats['active_sessions']}")
             
@@ -177,7 +177,7 @@ class ProgressiveSystemTester:
         for endpoint in endpoints:
             try:
                 response = requests.get(f"{self.base_url}{endpoint}")
-                if response.status_code == 200:
+                if 200 <= response.status_code < 300:
                     data = response.json()
                     endpoint_name = endpoint.split('/')[-1]
                     self.log(f"✅ {endpoint_name}: Retrieved data successfully")
@@ -195,13 +195,13 @@ class ProgressiveSystemTester:
         try:
             # Get active calls
             response = requests.get(f"{self.base_url}/api/v1/calls/active")
-            if response.status_code == 200:
+            if 200 <= response.status_code < 300:
                 calls = response.json()
                 self.log(f"✅ Active calls: {len(calls)} found")
             
             # Get call stats
             response = requests.get(f"{self.base_url}/api/v1/calls/stats")
-            if response.status_code == 200:
+            if 200 <= response.status_code < 300:
                 stats = response.json()
                 self.log(f"✅ Call stats: {stats['active_sessions']} active sessions")
                 

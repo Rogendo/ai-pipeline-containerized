@@ -77,7 +77,7 @@ class CallSessionManager:
             self.active_sessions[call_id] = session
             
             # Store in Redis for persistence
-            await self._store_session_in_redis(session)
+            self._store_session_in_redis(session)
             
             logger.info(f"📞 [session] Started call session: {call_id}")
             logger.info(f"📞 [session] Active sessions: {len(self.active_sessions)}")
@@ -149,7 +149,18 @@ class CallSessionManager:
                 logger.error(f"❌ Progressive processing failed for call {call_id}: {e}")
             
             # Store updated session
-            await self._store_session_in_redis(session)
+            self._store_session_in_redis(session)
+            
+            # Send transcript segment notification to agent
+            if AGENT_NOTIFICATIONS_ENABLED:
+                try:
+                    await agent_notification_service.send_transcript_segment(
+                        call_id, 
+                        segment, 
+                        session.cumulative_transcript
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Failed to send transcript segment notification for {call_id}: {e}")
             
             logger.info(f"📝 [session] Added segment {segment['segment_id']} to call {call_id}")
             logger.info(f"📝 [session] Transcript length: {len(session.cumulative_transcript)} chars")
@@ -194,19 +205,20 @@ class CallSessionManager:
     
     async def get_session(self, call_id: str) -> Optional[CallSession]:
         """Get active session by call ID"""
-        # Try memory first
-        if call_id in self.active_sessions:
-            return self.active_sessions[call_id]
-        
-        # Try Redis
+        # Try Redis first for cross-process compatibility
         try:
-            session_data = await self._get_session_from_redis(call_id)
+            session_data = self._get_session_from_redis(call_id)
             if session_data:
                 session = CallSession.from_dict(session_data)
+                # Update in-memory cache
                 self.active_sessions[call_id] = session
                 return session
         except Exception as e:
             logger.error(f"❌ Failed to retrieve session {call_id} from Redis: {e}")
+        
+        # Fallback to memory (for same-process access)
+        if call_id in self.active_sessions:
+            return self.active_sessions[call_id]
         
         return None
     
@@ -223,7 +235,7 @@ class CallSessionManager:
             session.last_activity = datetime.now()
             
             # Store final session state
-            await self._store_session_in_redis(session)
+            self._store_session_in_redis(session)
             
             # Finalize progressive processing and trigger summarization
             try:
@@ -326,9 +338,15 @@ class CallSessionManager:
             'session_list': [s.call_id for s in self.active_sessions.values()]
         }
     
-    async def _store_session_in_redis(self, session: CallSession):
+    def _store_session_in_redis(self, session: CallSession):
         """Store session in Redis for persistence"""
+        # Ensure we have a Redis client
         if not self.redis_client:
+            from ..config.settings import redis_task_client
+            self.redis_client = redis_task_client
+            
+        if not self.redis_client:
+            logger.warning(f"🔍 [session] Redis client not available for storing session {session.call_id}")
             return
         
         try:
@@ -348,12 +366,20 @@ class CallSessionManager:
             else:
                 self.redis_client.srem('active_call_sessions', session.call_id)
                 
+            logger.debug(f"🔍 [session] Successfully stored session {session.call_id} in Redis")
+                
         except Exception as e:
             logger.error(f"❌ Failed to store session {session.call_id} in Redis: {e}")
     
-    async def _get_session_from_redis(self, call_id: str) -> Optional[Dict]:
+    def _get_session_from_redis(self, call_id: str) -> Optional[Dict]:
         """Retrieve session from Redis"""
+        # Ensure we have a Redis client
         if not self.redis_client:
+            from ..config.settings import redis_task_client
+            self.redis_client = redis_task_client
+            
+        if not self.redis_client:
+            logger.warning(f"🔍 [session] Redis client not available for session {call_id}")
             return None
         
         try:
@@ -361,7 +387,10 @@ class CallSessionManager:
             session_json = self.redis_client.hget(session_key, 'data')
             
             if session_json:
+                logger.debug(f"🔍 [session] Found session {call_id} in Redis")
                 return json.loads(session_json)
+            else:
+                logger.debug(f"🔍 [session] No Redis data found for session {call_id}")
                 
         except Exception as e:
             logger.error(f"❌ Failed to retrieve session {call_id} from Redis: {e}")

@@ -111,7 +111,7 @@ def test_message_endpoint(endpoint, token):
             timeout=10
         )
         
-        if response.status_code == 200:
+        if 200 <= response.status_code < 300:  # Accept all 2xx success codes
             print(f"✅ Message endpoint working: HTTP {response.status_code}")
             print(f"📤 Test message sent successfully")
             return True
