@@ -110,6 +110,10 @@ class ModelLoader:
             "summarizer": {
                 "required": ["torch", "transformers", "numpy"],
                 "description": "Text summarization"
+            },
+            "all_qa_distilbert_v1": {
+                "required": ["torch", "transformers", "numpy"],
+                "description": "Quality Assuarance Scoring of the Calls"
             }
         }
         
@@ -255,6 +259,23 @@ class ModelLoader:
 
                 model_status.load_time = datetime.now()
                 return
+            
+            if model_name == "all_qa_distilbert_v1":
+                from .qa_model import qa_model
+                
+                success = qa_model.load()
+                if success:
+                    model_status.loaded = True
+                    model_status.error = None
+                    model_status.model_info = qa_model.get_model_info()
+                    self.models[model_name] = qa_model
+                    logger.info("✅ QA model loaded successfully")
+                else:
+                    model_status.error = qa_model.error or "Failed to load QA model"
+                    logger.error(f"❌ QA model failed to load: {model_status.error}")
+                model_status.load_time = datetime.now()
+                return
+            
             
             # If we get here, the model isn't implemented yet
             model_status.error = f"Model loading implementation pending (dependencies available)"
