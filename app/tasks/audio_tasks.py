@@ -296,7 +296,9 @@ def _process_audio_sync_worker(
     filename: str,
     language: Optional[str],
     include_translation: bool,
-    include_insights: bool
+    threshold: float = 0.5,
+    return_raw: bool = False,
+    include_insights: bool = True
 ) -> Dict[str, Any]:
     """
     Synchronous audio processing using worker models with Redis streaming
@@ -574,8 +576,41 @@ def _process_audio_sync_worker(
             "duration": summarization_duration,
             "status": "failed",
             "error": str(e)
-        }
+        }  
+ 
+    # QA Scoring
+    task_instance.update_state(
+        state="PROCESSING",
+        meta={"step": "qa_scoring", "progress": 90}
+    )
+    step_start = datetime.now()
+    try:
+
     
+        qa_score_model = models.models.get("all_qa_distilbert_v1")
+        if not qa_score_model:
+            raise RuntimeError("QA model not available")
+        # threshold = 0.5  # Default threshold
+        # return_raw  = False  # Default to not return raw scores
+        qa_score = qa_score_model.predict(nlp_text, threshold=threshold, return_raw=return_raw)
+        print(f"QA Score: {qa_score}")
+        logger.info(f"QA Score: {qa_score}")
+        logger.info(".........................................................................................................")
+        qa_status = {
+            "result": qa_score,
+            "duration": (datetime.now() - step_start).total_seconds(),
+            "status": "completed"
+        }
+
+
+    except Exception as e:
+        qa_status = {
+            "result": {},
+            "duration": (datetime.now() - step_start).total_seconds(),
+            "status": "failed",
+            "error": str(e)
+        }
+
     # Step 4: Insights (if enabled)
     insights = {}
     if include_insights:
@@ -589,9 +624,13 @@ def _process_audio_sync_worker(
         entities = ner_status["result"]
         classification = classifier_status["result"]
         summary = summary_status["result"]
-        
-        insights = _generate_insights(transcript, translation, entities, classification, summary)
-        
+        qa_scores = qa_status["result"] if "result" in qa_status else {}
+      
+      
+        insights = _generate_insights(transcript, translation, entities, classification, summary, qa_scores)
+        logger.info(f"Generated insights: {insights}")
+
+         
         publish_update(
             "insights_complete", 
             95, 
@@ -617,6 +656,8 @@ def _process_audio_sync_worker(
         },
         "entities": ner_status["result"],
         "classification": classifier_status["result"],
+        "qa_scores": qa_status["result"] if "result" in qa_status else {},
+
         "summary": summary_status["result"],
         "insights": insights if include_insights else None,
         "processing_steps": {
@@ -640,7 +681,7 @@ def _process_audio_sync_worker(
         },
         "pipeline_info": {
             "total_time": total_processing_time,
-            "models_used": ["whisper"] + (["translator"] if include_translation else []) + ["ner", "classifier", "summarizer"],
+            "models_used": ["whisper"] + (["translator"] if include_translation else []) + ["ner", "classifier", "summarizer", "all_qa_distilbert_v1"],
             "text_flow": f"transcript → {nlp_source} → nlp_models",
             "timestamp": datetime.now().isoformat(),
             "processed_by": "celery_worker"
@@ -686,12 +727,14 @@ def process_audio_quick_task(
         
         # Quick processing (no translation, no insights)
         result = _process_audio_sync_worker(
-            self, models, audio_bytes, filename, language, 
+            self, models, audio_bytes, filename, language, threshold=0.5, return_raw=False,
             include_translation=False, include_insights=False
         )
         
         # Extract essentials for quick response
         classification = result.get("classification", {})
+        qa_scores = result.get("qa_scores", {})
+
         insights = result.get("insights", {})
         risk_assessment = insights.get("risk_assessment", {}) if insights else {}
         
@@ -701,7 +744,9 @@ def process_audio_quick_task(
             "main_category": classification.get("main_category", "unknown"),
             "priority": classification.get("priority", "medium"),
             "risk_level": risk_assessment.get("risk_level", "unknown"),
-            "processing_time": result["pipeline_info"]["total_time"]
+            "processing_time": result["pipeline_info"]["total_time"],
+            # "qa_scores": qa_scores,
+
         }
         
         return {
@@ -723,7 +768,7 @@ def process_audio_quick_task(
         raise e
 
 def _generate_insights(transcript: str, translation: Optional[str], 
-                      entities: Dict, classification: Dict, summary: str) -> Dict[str, Any]:
+                      entities: Dict, classification: Dict, summary: str, qa_scores: Dict) -> Dict[str, Any]:
     """Generate basic insights from processed data"""
     
     persons = entities.get("PERSON", [])
@@ -764,7 +809,9 @@ def _generate_insights(transcript: str, translation: Optional[str],
             "persons": persons[:5],
             "locations": locations[:3],
             "organizations": organizations[:3],
-            "key_dates": dates[:3]
+            "key_dates": dates[:3],
+            # "qa_scores": qa_scores if qa_scores else {}
+
         }
     }
     
