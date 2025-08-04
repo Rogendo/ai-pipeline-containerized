@@ -9,6 +9,8 @@ import asyncio
 from ..config.settings import redis_task_client
 from .progressive_processor import progressive_processor
 
+logger = logging.getLogger(__name__)
+
 # Import agent notification service
 try:
     from ..services.agent_notification_service import agent_notification_service
@@ -16,8 +18,6 @@ try:
 except ImportError:
     AGENT_NOTIFICATIONS_ENABLED = False
     logger.warning("Agent notification service not available")
-
-logger = logging.getLogger(__name__)
 
 @dataclass
 class CallSession:
